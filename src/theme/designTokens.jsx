@@ -1,0 +1,83 @@
+import { colors } from './colors';
+
+export const spacing = {
+  xs: 4,
+  sm: 6,
+  md: 8,
+  lg: 12,
+  xl: 14,
+  xxl: 16,
+  xxxl: 18,
+  screen: 16,
+  screenVertical: 24,
+  tabHorizontalMargin: 16,
+  tabBottomOffset: 10,
+  sectionGap: 14,
+};
+
+export const radii = {
+  xs: 3,
+  sm: 5,
+  md: 8,
+  lg: 12,
+  xl: 14,
+  xxl: 16,
+  card: 24,
+  authCard: 28,
+  pill: 999,
+  navigation: 22,
+  compactCard: 18,
+  tabBar: 28,
+};
+
+export const sizes = {
+  inputHeight: 52,
+  inputHeightSmall: 46,
+  authInputHeight: 64,
+  authInputHeightSmall: 58,
+  buttonHeight: 52,
+  buttonHeightSmall: 48,
+  authButtonHeight: 58,
+  iconButton: 42,
+  minTouchTarget: 44,
+  drawerWidth: 304,
+  drawerItemHeight: 48,
+  floatingTabHeight: 66,
+  headerHeight: 58,
+  headerIcon: 22,
+  headerLogoWidth: 34,
+  headerLogoHeight: 34,
+  tabIconBubble: 34,
+  attendanceActionHeight: 48,
+};
+
+export const shadows = {
+  card: {
+    shadowColor: '#004D56',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.08,
+    shadowRadius: 24,
+    elevation: 6,
+  },
+  subtle: {
+    shadowColor: '#004D56',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 6,
+    elevation: 2,
+  },
+  primary: {
+    shadowColor: colors.primary,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.25,
+    shadowRadius: 12,
+    elevation: 4,
+  },
+  modal: {
+    shadowColor: colors.black,
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.25,
+    shadowRadius: 24,
+    elevation: 8,
+  },
+};

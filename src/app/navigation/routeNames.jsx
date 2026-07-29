@@ -1,0 +1,17 @@
+export const ROUTES = {
+  LOGIN: 'Login',
+  CREATE_ACCOUNT: 'CreateAccount',
+  FORGOT_PASSWORD: 'ForgotPassword',
+  VERIFY_OTP: 'VerifyOtp',
+  RESET_PASSWORD: 'ResetPassword',
+  APP_DRAWER: 'AppDrawer',
+  MAIN_TABS: 'MainTabs',
+  DASHBOARD: 'Dashboard',
+  MY_ATTENDANCE: 'MyAttendance',
+  EMPLOYEE_LEAVES: 'EmployeeLeaves',
+  PROFILE: 'Profile',
+  MY_HOLIDAYS: 'MyHolidays',
+  EMPLOYEES: 'Employees',
+  PAYSLIP: 'Payslip',
+  TEAMS: 'Teams',
+};

@@ -1,0 +1,96 @@
+import { environment } from '../config/environment';
+
+const DEFAULT_TIMEOUT_MS = 20000;
+
+function buildUrl(endpoint) {
+  if (!endpoint.startsWith('/')) {
+    throw new Error(`API endpoint must be relative and start with "/": ${endpoint}`);
+  }
+
+  return `${environment.apiBaseUrl}${endpoint}`;
+}
+
+function extractErrorMessage(data, fallback) {
+  if (typeof data === 'string' && data.trim()) return data;
+  return (
+    data?.message ||
+    data?.title ||
+    data?.error ||
+    data?.detail ||
+    data?.errors?.[0]?.message ||
+    fallback
+  );
+}
+
+async function parseResponse(response) {
+  const responseText = await response.text();
+  if (!responseText) return null;
+
+  try {
+    return JSON.parse(responseText);
+  } catch {
+    return responseText;
+  }
+}
+
+async function request(endpoint, { method = 'GET', body, token, headers, timeout = DEFAULT_TIMEOUT_MS } = {}) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeout);
+
+  const requestHeaders = {
+    Accept: 'application/json',
+    'ngrok-skip-browser-warning': 'true',
+    ...headers,
+  };
+
+  const hasBody = body !== undefined && body !== null;
+  if (hasBody) {
+    requestHeaders['Content-Type'] = 'application/json';
+  }
+
+  if (token) {
+    requestHeaders.Authorization = `Bearer ${token}`;
+  }
+
+  try {
+    const response = await fetch(buildUrl(endpoint), {
+      method,
+      headers: requestHeaders,
+      body: hasBody ? JSON.stringify(body) : undefined,
+      signal: controller.signal,
+    });
+
+    const data = await parseResponse(response);
+
+    if (!response.ok) {
+      const error = new Error(
+        extractErrorMessage(data, 'Request failed. Please try again.')
+      );
+      error.status = response.status;
+      error.data = data;
+      throw error;
+    }
+
+    return data;
+  } catch (error) {
+    if (error.name === 'AbortError') {
+      throw new Error('Request timed out. Please check your connection and try again.');
+    }
+
+    if (!error.status && error.message === 'Network request failed') {
+      throw new Error('Network error. Please check your internet connection.');
+    }
+
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+export const apiClient = {
+  get: (endpoint, options) => request(endpoint, { ...options, method: 'GET' }),
+  post: (endpoint, body, options) => request(endpoint, { ...options, method: 'POST', body }),
+  put: (endpoint, body, options) => request(endpoint, { ...options, method: 'PUT', body }),
+  patch: (endpoint, body, options) => request(endpoint, { ...options, method: 'PATCH', body }),
+  delete: (endpoint, options) => request(endpoint, { ...options, method: 'DELETE' }),
+};
