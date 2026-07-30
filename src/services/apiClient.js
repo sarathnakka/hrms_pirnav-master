@@ -33,9 +33,16 @@ async function parseResponse(response) {
   }
 }
 
-async function request(endpoint, { method = 'GET', body, token, headers, timeout = DEFAULT_TIMEOUT_MS } = {}) {
+async function request(endpoint, { method = 'GET', body, token, headers, timeout = DEFAULT_TIMEOUT_MS, signal } = {}) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeout);
+  const abortRequest = () => controller.abort();
+
+  if (signal?.aborted) {
+    controller.abort();
+  } else if (signal?.addEventListener) {
+    signal.addEventListener('abort', abortRequest);
+  }
 
   const requestHeaders = {
     Accept: 'application/json',
@@ -84,6 +91,9 @@ async function request(endpoint, { method = 'GET', body, token, headers, timeout
     throw error;
   } finally {
     clearTimeout(timeoutId);
+    if (signal?.removeEventListener) {
+      signal.removeEventListener('abort', abortRequest);
+    }
   }
 }
 

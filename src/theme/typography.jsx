@@ -11,6 +11,9 @@ export const fontSizes = {
   drawerLabel: 14,
   metricLabel: 11,
   metricValue: 16,
+  dashboardTitle: 24,
+  dashboardSectionTitle: 18,
+  dashboardMetricValue: 24,
 };
 
 export const fontWeights = {

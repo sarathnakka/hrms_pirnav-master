@@ -10,6 +10,7 @@ export const ROUTES = {
   MY_ATTENDANCE: 'MyAttendance',
   EMPLOYEE_LEAVES: 'EmployeeLeaves',
   PROFILE: 'Profile',
+  NOTIFICATIONS: 'Notifications',
   MY_HOLIDAYS: 'MyHolidays',
   EMPLOYEES: 'Employees',
   PAYSLIP: 'Payslip',

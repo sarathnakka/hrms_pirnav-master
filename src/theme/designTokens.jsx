@@ -13,6 +13,8 @@ export const spacing = {
   tabHorizontalMargin: 16,
   tabBottomOffset: 10,
   sectionGap: 14,
+  dashboardGap: 12,
+  dashboardSectionGap: 16,
 };
 
 export const radii = {
@@ -27,6 +29,8 @@ export const radii = {
   pill: 999,
   navigation: 22,
   compactCard: 18,
+  dashboardCard: 18,
+  dashboardMetric: 16,
   tabBar: 28,
 };
 
@@ -49,6 +53,9 @@ export const sizes = {
   headerLogoHeight: 34,
   tabIconBubble: 34,
   attendanceActionHeight: 48,
+  dashboardMetricIcon: 34,
+  dashboardAvatar: 46,
+  profileAvatarLarge: 72,
 };
 
 export const shadows = {
@@ -65,6 +72,13 @@ export const shadows = {
     shadowOpacity: 0.04,
     shadowRadius: 6,
     elevation: 2,
+  },
+  dashboard: {
+    shadowColor: '#004D56',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.05,
+    shadowRadius: 14,
+    elevation: 3,
   },
   primary: {
     shadowColor: colors.primary,

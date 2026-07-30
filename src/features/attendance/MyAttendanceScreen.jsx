@@ -356,6 +356,28 @@ export default function MyAttendanceScreen() {
     </View>
   );
 
+  const renderSummaryItem = (label, value, icon, styleName, textColor, isTotal = false) => (
+    <View style={[styles.summaryItem, styles[styleName], isTotal && styles.summaryItemTotal]}>
+      <View style={styles.summaryIconRow}>
+        <Ionicons
+          name={icon}
+          size={15}
+          color={textColor}
+        />
+        <Text
+          style={[styles.summaryLabel, { color: textColor }]}
+          numberOfLines={1}
+          ellipsizeMode="tail"
+        >
+          {label}
+        </Text>
+      </View>
+      <Text style={[styles.summaryValue, isTotal && styles.summaryValueTotal, { color: textColor }]}>
+        {value}
+      </Text>
+    </View>
+  );
+
   const renderHistoryItem = ({ item, index }) => {
     const dayName = item.day || item.dayName || 'Day';
     const dateVal = item.date || item.attendanceDate || '--';
@@ -484,26 +506,11 @@ export default function MyAttendanceScreen() {
         <View style={styles.summaryCard}>
           <Text style={styles.sectionTitle}>Attendance Summary</Text>
           <View style={styles.summaryGrid}>
-            <View style={styles.summaryItem}>
-              <Text style={styles.summaryValue}>{attendanceSummary.present}</Text>
-              <Text style={styles.summaryLabel}>Present</Text>
-            </View>
-            <View style={styles.summaryItem}>
-              <Text style={styles.summaryValue}>{attendanceSummary.late}</Text>
-              <Text style={styles.summaryLabel}>Late</Text>
-            </View>
-            <View style={styles.summaryItem}>
-              <Text style={styles.summaryValue}>{attendanceSummary.leave}</Text>
-              <Text style={styles.summaryLabel}>Leave</Text>
-            </View>
-            <View style={styles.summaryItem}>
-              <Text style={styles.summaryValue}>{attendanceSummary.absent}</Text>
-              <Text style={styles.summaryLabel}>Absent</Text>
-            </View>
-            <View style={styles.summaryItem}>
-              <Text style={styles.summaryValue}>{attendanceSummary.total}</Text>
-              <Text style={styles.summaryLabel}>Total</Text>
-            </View>
+            {renderSummaryItem('Present', attendanceSummary.present, 'checkmark-circle-outline', 'summaryPresent', colors.attendance.summaryPresentText)}
+            {renderSummaryItem('Late', attendanceSummary.late, 'time-outline', 'summaryLate', colors.attendance.summaryLateText)}
+            {renderSummaryItem('Leave', attendanceSummary.leave, 'calendar-outline', 'summaryLeave', colors.attendance.summaryLeaveText)}
+            {renderSummaryItem('Absent', attendanceSummary.absent, 'close-circle-outline', 'summaryAbsent', colors.attendance.summaryAbsentText)}
+            {renderSummaryItem('Total', attendanceSummary.total, 'layers-outline', 'summaryTotal', colors.attendance.summaryTotalText, true)}
           </View>
         </View>
       )}
@@ -759,15 +766,18 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: spacing.sm,
+    ...shadows.primary,
   },
   checkInButton: {
-    backgroundColor: colors.primaryLight,
+    backgroundColor: colors.attendance.checkInAction,
   },
   checkOutButton: {
-    backgroundColor: colors.primaryDark,
+    backgroundColor: colors.attendance.checkOutAction,
   },
   actionDisabled: {
-    backgroundColor: colors.disabled,
+    backgroundColor: colors.attendance.disabledAction,
+    shadowOpacity: 0,
+    elevation: 0,
   },
   actionButtonText: {
     color: colors.white,
@@ -800,25 +810,67 @@ const styles = StyleSheet.create({
     marginTop: spacing.lg,
   },
   summaryItem: {
-    flex: 1,
-    minWidth: 56,
-    minHeight: 62,
+    flexGrow: 1,
+    flexShrink: 1,
+    flexBasis: '47%',
+    minWidth: 118,
+    minHeight: 82,
     borderRadius: radii.xl,
-    backgroundColor: colors.attendance.surfaceSoft,
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    paddingHorizontal: spacing.xxl,
+    paddingVertical: spacing.lg,
+    borderWidth: 1,
+    borderColor: colors.attendance.border,
+  },
+  summaryItemTotal: {
+    flexBasis: '100%',
+    minHeight: 52,
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: spacing.xs,
+    justifyContent: 'space-between',
+  },
+  summaryIconRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    minWidth: 0,
+    maxWidth: '100%',
+  },
+  summaryPresent: {
+    backgroundColor: colors.attendance.summaryPresentBackground,
+    borderColor: colors.successBackground,
+  },
+  summaryLate: {
+    backgroundColor: colors.attendance.summaryLateBackground,
+    borderColor: colors.warningBackground,
+  },
+  summaryLeave: {
+    backgroundColor: colors.attendance.summaryLeaveBackground,
+    borderColor: colors.border,
+  },
+  summaryAbsent: {
+    backgroundColor: colors.attendance.summaryAbsentBackground,
+    borderColor: colors.dangerBorder,
+  },
+  summaryTotal: {
+    backgroundColor: colors.attendance.summaryTotalBackground,
+    borderColor: colors.borderSoft,
   },
   summaryValue: {
-    color: colors.textPrimary,
-    fontSize: fontSizes.button,
+    fontSize: fontSizes.headerTitle,
     fontWeight: fontWeights.extraBold,
+    marginTop: spacing.lg,
+  },
+  summaryValueTotal: {
+    marginTop: 0,
   },
   summaryLabel: {
-    color: colors.textSecondary,
-    fontSize: fontSizes.sm,
-    fontWeight: fontWeights.semibold,
-    marginTop: spacing.xs,
+    flex: 1,
+    minWidth: 0,
+    fontSize: fontSizes.body,
+    fontWeight: fontWeights.extraBold,
+    flexShrink: 1,
   },
   historyHeader: {
     marginTop: spacing.xs,
