@@ -3,7 +3,7 @@ import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { ROUTES } from '../../app/navigation/routeNames';
+import { ROUTES, VISIBLE_TAB_ROUTES } from '../../app/navigation/routeNames';
 import { colors, fontSizes, fontWeights, radii, shadows, sizes, spacing } from '../../theme';
 
 const TAB_ICONS = {
@@ -15,6 +15,8 @@ const TAB_ICONS = {
 
 export default function FloatingTabBar({ state, descriptors, navigation }) {
   const insets = useSafeAreaInsets();
+  const activeRouteName = state.routes[state.index]?.name;
+  const visibleRoutes = state.routes.filter((route) => VISIBLE_TAB_ROUTES.includes(route.name));
 
   return (
     <View
@@ -25,10 +27,10 @@ export default function FloatingTabBar({ state, descriptors, navigation }) {
       pointerEvents="box-none"
     >
       <View style={styles.container}>
-        {state.routes.map((route, index) => {
+        {visibleRoutes.map((route) => {
           const options = descriptors[route.key].options;
           const label = options.tabBarLabel || options.title || route.name;
-          const isFocused = state.index === index;
+          const isFocused = activeRouteName === route.name;
           const [inactiveIcon, activeIcon] = TAB_ICONS[route.name] || ['ellipse-outline', 'ellipse'];
 
           const onPress = () => {

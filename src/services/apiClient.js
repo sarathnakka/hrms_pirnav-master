@@ -10,6 +10,10 @@ function buildUrl(endpoint) {
   return `${environment.apiBaseUrl}${endpoint}`;
 }
 
+export function buildApiUrl(endpoint) {
+  return buildUrl(endpoint);
+}
+
 function extractErrorMessage(data, fallback) {
   if (typeof data === 'string' && data.trim()) return data;
   return (
@@ -103,4 +107,5 @@ export const apiClient = {
   put: (endpoint, body, options) => request(endpoint, { ...options, method: 'PUT', body }),
   patch: (endpoint, body, options) => request(endpoint, { ...options, method: 'PATCH', body }),
   delete: (endpoint, options) => request(endpoint, { ...options, method: 'DELETE' }),
+  buildUrl: buildApiUrl,
 };

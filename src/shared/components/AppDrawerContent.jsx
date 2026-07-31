@@ -11,11 +11,11 @@ const headerLogo = require('../../../assets/headerlogo.png');
 
 const DRAWER_ITEMS = [
   { label: 'Dashboard', icon: 'grid-outline', tab: ROUTES.DASHBOARD },
-  { label: 'My Holidays', icon: 'calendar-outline', route: ROUTES.MY_HOLIDAYS },
+  { label: 'My Holidays', icon: 'calendar-outline', tab: ROUTES.MY_HOLIDAYS },
   { label: 'Employees', icon: 'people-outline', route: ROUTES.EMPLOYEES },
-  { label: 'Payslip', icon: 'receipt-outline', route: ROUTES.PAYSLIP },
+  { label: 'Payslip', icon: 'receipt-outline', tab: ROUTES.PAYSLIP },
   { label: 'My Attendance', icon: 'time-outline', tab: ROUTES.MY_ATTENDANCE },
-  { label: 'Teams', icon: 'people-circle-outline', route: ROUTES.TEAMS },
+  { label: 'Teams', icon: 'people-circle-outline', tab: ROUTES.TEAMS_FLOW, nestedScreen: ROUTES.TEAMS },
   { label: 'Employee Leaves', icon: 'document-text-outline', tab: ROUTES.EMPLOYEE_LEAVES },
 ];
 
@@ -31,7 +31,10 @@ export default function AppDrawerContent(props) {
 
   const navigateToItem = (item) => {
     if (item.tab) {
-      navigation.navigate(ROUTES.MAIN_TABS, { screen: item.tab });
+      navigation.navigate(ROUTES.MAIN_TABS, {
+        screen: item.tab,
+        params: item.nestedScreen ? { screen: item.nestedScreen } : undefined,
+      });
     } else {
       navigation.navigate(item.route);
     }
@@ -54,6 +57,8 @@ export default function AppDrawerContent(props) {
             const target = item.tab || item.route;
             const isActive =
               activeRoute === target ||
+              (item.tab === ROUTES.TEAMS_FLOW && activeRoute === ROUTES.TEAMS) ||
+              (item.tab === ROUTES.TEAMS_FLOW && activeRoute === ROUTES.TEAM_DETAILS) ||
               (activeRoute === ROUTES.MAIN_TABS && item.tab === ROUTES.DASHBOARD);
 
             return (

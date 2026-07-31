@@ -15,4 +15,13 @@ export const ROUTES = {
   EMPLOYEES: 'Employees',
   PAYSLIP: 'Payslip',
   TEAMS: 'Teams',
+  TEAMS_FLOW: 'TeamsFlow',
+  TEAM_DETAILS: 'TeamDetails',
 };
+
+export const VISIBLE_TAB_ROUTES = [
+  ROUTES.DASHBOARD,
+  ROUTES.MY_ATTENDANCE,
+  ROUTES.EMPLOYEE_LEAVES,
+  ROUTES.PROFILE,
+];
