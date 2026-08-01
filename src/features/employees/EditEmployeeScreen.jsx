@@ -12,7 +12,6 @@ import {
   TextInput,
   TouchableOpacity,
   View,
-  useWindowDimensions,
 } from 'react-native';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import * as DocumentPicker from 'expo-document-picker';
@@ -403,7 +402,6 @@ function ActionRow({ step, loading, onBack, onSkip, onNext, nextLabel = 'Update 
 export default function EditEmployeeScreen({ navigation }) {
   const { token } = useAuth();
   const insets = useSafeAreaInsets();
-  const { width } = useWindowDimensions();
   const abortRef = useRef(null);
   const scrollRef = useRef(null);
   const [step, setStep] = useState(0);
@@ -431,7 +429,6 @@ export default function EditEmployeeScreen({ navigation }) {
   const [finishSuccessVisible, setFinishSuccessVisible] = useState(false);
   const [dirty, setDirty] = useState(false);
 
-  const contentWidth = Math.min(Math.max(width - spacing.screen * 2, 288), 720);
   const groupedDocumentOptions = useMemo(
     () => DOCUMENT_GROUPS.flatMap((group) => group.options.map((option) => ({ label: option, value: option, group: group.label }))),
     []
@@ -1206,7 +1203,7 @@ export default function EditEmployeeScreen({ navigation }) {
     >
       <ScrollView
         ref={scrollRef}
-        contentContainerStyle={[styles.content, { width: contentWidth, paddingBottom: sizes.floatingTabHeight + insets.bottom + spacing.xxxl * 3 }]}
+        contentContainerStyle={[styles.content, { paddingBottom: sizes.floatingTabHeight + insets.bottom + spacing.xxxl * 3 }]}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
         refreshControl={
@@ -1219,7 +1216,7 @@ export default function EditEmployeeScreen({ navigation }) {
         }
       >
         <View style={styles.headerBlock}>
-          <Text style={styles.screenTitle}>Edit Employee</Text>
+          <Text style={styles.screenTitle}>Add Employee Details</Text>
           <Text style={styles.screenSubtitle}>Review and update your employee profile details.</Text>
         </View>
 
@@ -1247,7 +1244,7 @@ export default function EditEmployeeScreen({ navigation }) {
               <Ionicons name="checkmark" size={32} color={colors.white} />
             </View>
             <Text style={styles.successTitle}>Employee details submitted successfully.</Text>
-            <Text style={styles.successSubtitle}>Your employee profile has been updated.</Text>
+            {/* <Text style={styles.successSubtitle}>Your employee profile has been updated.</Text> */}
           </View>
         </View>
       </Modal>
@@ -1268,6 +1265,8 @@ const styles = StyleSheet.create({
     backgroundColor: colors.employeeEdit.background,
   },
   content: {
+    width: '100%',
+    maxWidth: 720,
     alignSelf: 'center',
     padding: spacing.screen,
     gap: spacing.sectionGap,

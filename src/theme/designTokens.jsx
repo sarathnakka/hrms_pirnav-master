@@ -56,6 +56,7 @@ export const sizes = {
   dashboardMetricIcon: 34,
   dashboardAvatar: 46,
   profileAvatarLarge: 72,
+  profileAvatarCompact: 72,
 };
 
 export const shadows = {

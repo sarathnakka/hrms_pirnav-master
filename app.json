@@ -1,24 +1,27 @@
 {
   "expo": {
-    "name": "hrms_pirnav",
-    "slug": "hrms_pirnav",
+    "name": "PIRNAV HRMS",
+    "slug": "hrms-pirnav",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/iconlogo.png",
+    "icon": "./assets/app-icon.png",
     "userInterfaceStyle": "light",
     "newArchEnabled": true,
     "splash": {
-      "image": "./assets/splash-icon.png",
+      "image": "./assets/pirnav-splash.png",
       "resizeMode": "contain",
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "icon": "./assets/app-icon.png"
     },
     "android": {
+      "icon": "./assets/app-icon.png",
       "adaptiveIcon": {
-        "foregroundImage": "./assets/iconlogo.png",
-        "backgroundColor": "#F4FAFA"
+        "foregroundImage": "./assets/adaptive-icon-foreground.png",
+        "backgroundColor": "#F4FBFB",
+        "monochromeImage": "./assets/adaptive-icon-monochrome.png"
       },
       "edgeToEdgeEnabled": true
     },
