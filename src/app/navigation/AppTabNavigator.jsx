@@ -5,6 +5,7 @@ import { createStackNavigator } from '@react-navigation/stack';
 import DashboardScreen from '../../features/dashboard/DashboardScreen';
 import MyAttendanceScreen from '../../features/attendance/MyAttendanceScreen';
 import EmployeeLeavesScreen from '../../features/leave/EmployeeLeavesScreen';
+import EditEmployeeScreen from '../../features/employees/EditEmployeeScreen';
 import MyHolidaysScreen from '../../features/holidays/MyHolidaysScreen';
 import PayslipScreen from '../../features/payslip/PayslipScreen';
 import ProfileScreen from '../../features/profile/ProfileScreen';
@@ -21,6 +22,7 @@ const TeamsStack = createStackNavigator();
 function getTabTitle(routeName) {
   if (routeName === ROUTES.MY_ATTENDANCE) return 'My Attendance';
   if (routeName === ROUTES.EMPLOYEE_LEAVES) return 'Employee Leaves';
+  if (routeName === ROUTES.EDIT_EMPLOYEE) return 'Edit Employee';
   if (routeName === ROUTES.MY_HOLIDAYS) return 'My Holidays';
   return routeName;
 }
@@ -95,6 +97,15 @@ export default function AppTabNavigator() {
           title: 'Profile',
           tabBarLabel: 'Profile',
           tabBarAccessibilityLabel: 'Profile tab',
+        }}
+      />
+      <Tab.Screen
+        name={ROUTES.EDIT_EMPLOYEE}
+        component={EditEmployeeScreen}
+        options={{
+          title: 'Edit Employee',
+          tabBarLabel: 'Edit Employee',
+          tabBarButton: () => null,
         }}
       />
       <Tab.Screen

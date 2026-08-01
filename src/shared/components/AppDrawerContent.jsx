@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { Image, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { DrawerContentScrollView } from '@react-navigation/drawer';
 import { Ionicons } from '@expo/vector-icons';
@@ -12,7 +12,14 @@ const headerLogo = require('../../../assets/headerlogo.png');
 const DRAWER_ITEMS = [
   { label: 'Dashboard', icon: 'grid-outline', tab: ROUTES.DASHBOARD },
   { label: 'My Holidays', icon: 'calendar-outline', tab: ROUTES.MY_HOLIDAYS },
-  { label: 'Employees', icon: 'people-outline', route: ROUTES.EMPLOYEES },
+  {
+    label: 'Employees',
+    icon: 'people-outline',
+    group: 'employees',
+    children: [
+      { label: 'Add Employee Details', icon: 'person-add-outline', tab: ROUTES.EDIT_EMPLOYEE },
+    ],
+  },
   { label: 'Payslip', icon: 'receipt-outline', tab: ROUTES.PAYSLIP },
   { label: 'My Attendance', icon: 'time-outline', tab: ROUTES.MY_ATTENDANCE },
   { label: 'Teams', icon: 'people-circle-outline', tab: ROUTES.TEAMS_FLOW, nestedScreen: ROUTES.TEAMS },
@@ -28,6 +35,15 @@ function getActiveRouteName(state) {
 export default function AppDrawerContent(props) {
   const { navigation, state } = props;
   const activeRoute = getActiveRouteName(state);
+  const [expandedGroups, setExpandedGroups] = useState({
+    employees: activeRoute === ROUTES.EDIT_EMPLOYEE,
+  });
+
+  useEffect(() => {
+    if (activeRoute === ROUTES.EDIT_EMPLOYEE) {
+      setExpandedGroups((current) => ({ ...current, employees: true }));
+    }
+  }, [activeRoute]);
 
   const navigateToItem = (item) => {
     if (item.tab) {
@@ -35,10 +51,17 @@ export default function AppDrawerContent(props) {
         screen: item.tab,
         params: item.nestedScreen ? { screen: item.nestedScreen } : undefined,
       });
-    } else {
+    } else if (item.route) {
       navigation.navigate(item.route);
     }
     navigation.dispatch(DrawerActions.closeDrawer());
+  };
+
+  const toggleGroup = (group) => {
+    setExpandedGroups((current) => ({
+      ...current,
+      [group]: !current[group],
+    }));
   };
 
   return (
@@ -54,6 +77,63 @@ export default function AppDrawerContent(props) {
 
         <View style={styles.items}>
           {DRAWER_ITEMS.map((item) => {
+            if (item.children) {
+              const isExpanded = Boolean(expandedGroups[item.group]);
+              const isGroupActive = item.children.some((child) => activeRoute === child.tab);
+
+              return (
+                <View key={item.label}>
+                  <TouchableOpacity
+                    style={[styles.item, isGroupActive && styles.itemActive]}
+                    onPress={() => toggleGroup(item.group)}
+                    activeOpacity={0.78}
+                    accessibilityRole="button"
+                    accessibilityState={{ expanded: isExpanded }}
+                    accessibilityLabel={`${isExpanded ? 'Collapse' : 'Expand'} ${item.label}`}
+                  >
+                    <Ionicons
+                      name={item.icon}
+                      size={22}
+                      color={isGroupActive ? colors.navigation.drawerActiveIcon : colors.navigation.drawerInactiveIcon}
+                    />
+                    <Text style={[styles.itemText, isGroupActive && styles.itemTextActive]}>
+                      {item.label}
+                    </Text>
+                    <Ionicons
+                      name={isExpanded ? 'chevron-down' : 'chevron-forward'}
+                      size={18}
+                      color={isGroupActive ? colors.navigation.drawerActiveIcon : colors.navigation.drawerInactiveIcon}
+                      style={styles.chevron}
+                    />
+                  </TouchableOpacity>
+
+                  {isExpanded && item.children.map((child) => {
+                    const isChildActive = activeRoute === child.tab;
+
+                    return (
+                      <TouchableOpacity
+                        key={child.label}
+                        style={[styles.subItem, isChildActive && styles.subItemActive]}
+                        onPress={() => navigateToItem(child)}
+                        activeOpacity={0.78}
+                        accessibilityRole="button"
+                        accessibilityLabel={`Navigate to ${child.label}`}
+                      >
+                        <Ionicons
+                          name={child.icon}
+                          size={20}
+                          color={isChildActive ? colors.navigation.drawerActiveIcon : colors.navigation.drawerInactiveIcon}
+                        />
+                        <Text style={[styles.subItemText, isChildActive && styles.itemTextActive]}>
+                          {child.label}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              );
+            }
+
             const target = item.tab || item.route;
             const isActive =
               activeRoute === target ||
@@ -96,20 +176,22 @@ const styles = StyleSheet.create({
     paddingBottom: spacing.xxl,
   },
   header: {
+    alignItems: 'center',
+    justifyContent: 'center',
     backgroundColor: colors.navigation.drawerHeaderBackground,
     paddingHorizontal: spacing.xxl,
-    paddingTop: spacing.xxl,
-    paddingBottom: spacing.xxl,
+    paddingTop: spacing.xs,
+    paddingBottom: spacing.xs,
     borderBottomWidth: 1,
     borderBottomColor: colors.navigation.drawerDivider,
   },
   logo: {
-    width: '100%',
-    height: 70,
+    width: '92%',
+    height: 48,
   },
   items: {
     paddingHorizontal: spacing.lg,
-    paddingTop: spacing.xxl,
+    paddingTop: spacing.md,
   },
   item: {
     minHeight: sizes.drawerItemHeight,
@@ -123,6 +205,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.navigation.drawerActiveBackground,
   },
   itemText: {
+    flex: 1,
     marginLeft: spacing.lg,
     color: colors.navigation.drawerInactiveText,
     fontSize: fontSizes.drawerLabel,
@@ -131,5 +214,27 @@ const styles = StyleSheet.create({
   itemTextActive: {
     color: colors.navigation.drawerActiveText,
     fontWeight: fontWeights.extraBold,
+  },
+  chevron: {
+    marginLeft: spacing.md,
+  },
+  subItem: {
+    minHeight: sizes.drawerItemHeight,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: spacing.lg,
+    paddingLeft: spacing.xxl * 2,
+    borderRadius: 16,
+    marginBottom: spacing.sm,
+  },
+  subItemActive: {
+    backgroundColor: colors.navigation.drawerActiveBackground,
+  },
+  subItemText: {
+    flex: 1,
+    marginLeft: spacing.lg,
+    color: colors.navigation.drawerInactiveText,
+    fontSize: fontSizes.drawerLabel,
+    fontWeight: fontWeights.semibold,
   },
 });

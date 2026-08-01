@@ -13,6 +13,7 @@ export const ROUTES = {
   NOTIFICATIONS: 'Notifications',
   MY_HOLIDAYS: 'MyHolidays',
   EMPLOYEES: 'Employees',
+  EDIT_EMPLOYEE: 'EditEmployee',
   PAYSLIP: 'Payslip',
   TEAMS: 'Teams',
   TEAMS_FLOW: 'TeamsFlow',
