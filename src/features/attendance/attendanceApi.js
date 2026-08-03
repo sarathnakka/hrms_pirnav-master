@@ -114,3 +114,53 @@ export async function getAttendanceHistory(period = 'Week') {
     raw: data,
   };
 }
+
+export async function getTodayAttendance() {
+  const token = await getToken();
+  const result = await toResult(
+    requestWithFallback('/api/Attendance/today', '/Attendance/today', (endpoint) =>
+      apiClient.get(endpoint, { token })
+    ),
+    'Unable to load today attendance.'
+  );
+
+  if (!result.success) return result;
+
+  return {
+    success: true,
+    data: result.data,
+    raw: result.data,
+  };
+}
+
+export async function getAttendanceSettings() {
+  const token = await getToken();
+
+  const result = await toResult(
+    requestWithFallback('/api/Settings/attendance', '/Settings/attendance', (endpoint) =>
+      apiClient.get(endpoint, { token })
+    ),
+    'Unable to load attendance settings.'
+  );
+
+  if (!result.success) {
+    return result;
+  }
+
+  const source = result.data?.data ?? result.data?.result ?? result.data;
+
+  return {
+    success: true,
+    data: {
+      id: source?.id,
+      officeStartTime: source?.officeStartTime || '',
+      officeEndTime: source?.officeEndTime || '',
+      checkInStartTime: source?.checkInStartTime || '',
+      lateAfterTime: source?.lateAfterTime || '',
+      checkoutTime: source?.checkoutTime || '',
+      halfDayHours: source?.halfDayHours,
+      updatedAt: source?.updatedAt,
+    },
+    raw: result.data,
+  };
+}

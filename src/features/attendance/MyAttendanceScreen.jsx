@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   Alert,
   Animated,
+  AppState,
   Easing,
   FlatList,
   Modal,
@@ -15,6 +16,7 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useFocusEffect } from '@react-navigation/native';
 
 import { getCurrentLocation } from '../../services/locationService';
 import {
@@ -30,7 +32,57 @@ import {
   checkInAttendance,
   checkOutAttendance,
   getAttendanceHistory,
+  getAttendanceSettings,
 } from './attendanceApi';
+
+const DEFAULT_CHECK_IN_START_TIME = '08:55:00';
+
+function parseTimeToSeconds(value) {
+  const normalized = String(value || '').trim();
+  const match = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(normalized);
+
+  if (!match) return null;
+
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  const seconds = Number(match[3] || 0);
+
+  if (
+    hours < 0 ||
+    hours > 23 ||
+    minutes < 0 ||
+    minutes > 59 ||
+    seconds < 0 ||
+    seconds > 59
+  ) {
+    return null;
+  }
+
+  return hours * 3600 + minutes * 60 + seconds;
+}
+
+function getCurrentLocalSeconds(date = new Date()) {
+  return date.getHours() * 3600 + date.getMinutes() * 60 + date.getSeconds();
+}
+
+function isBeforeConfiguredTime(date, configuredTime) {
+  const configuredSeconds = parseTimeToSeconds(configuredTime);
+  if (configuredSeconds === null) return false;
+
+  return getCurrentLocalSeconds(date) < configuredSeconds;
+}
+
+function formatBackendTime12h(value) {
+  const seconds = parseTimeToSeconds(value);
+  if (seconds === null) return '';
+
+  const hours24 = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const period = hours24 >= 12 ? 'PM' : 'AM';
+  const hours12 = hours24 % 12 || 12;
+
+  return `${hours12}:${String(minutes).padStart(2, '0')} ${period}`;
+}
 
 function formatTime12h(timeStr) {
   if (!timeStr || timeStr === '--' || timeStr === '-') return '--';
@@ -99,6 +151,116 @@ function getCurrentStatusMeta(isCheckedIn, isCheckedOut) {
   };
 }
 
+function getLocalDateKey(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+
+  return `${year}-${month}-${day}`;
+}
+
+function getAttendanceDateKey(value) {
+  const text = String(value || '').trim();
+  if (!text) return '';
+
+  const isoMatch = /^(\d{4})-(\d{2})-(\d{2})/.exec(text);
+  if (isoMatch) {
+    return `${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`;
+  }
+
+  const numericMatch = /^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/.exec(text);
+  if (numericMatch) {
+    return [
+      numericMatch[3],
+      String(numericMatch[2]).padStart(2, '0'),
+      String(numericMatch[1]).padStart(2, '0'),
+    ].join('-');
+  }
+
+  const namedMonthMatch = /^(\d{1,2})\s+([A-Za-z]{3,9})\s+(\d{4})$/.exec(text);
+  if (namedMonthMatch) {
+    const months = {
+      jan: 1,
+      feb: 2,
+      mar: 3,
+      apr: 4,
+      may: 5,
+      jun: 6,
+      jul: 7,
+      aug: 8,
+      sep: 9,
+      oct: 10,
+      nov: 11,
+      dec: 12,
+    };
+    const month = months[namedMonthMatch[2].slice(0, 3).toLowerCase()];
+
+    if (month) {
+      return [
+        namedMonthMatch[3],
+        String(month).padStart(2, '0'),
+        String(namedMonthMatch[1]).padStart(2, '0'),
+      ].join('-');
+    }
+  }
+
+  return '';
+}
+
+function hasValidAttendanceTime(value) {
+  const normalized = String(value ?? '').trim();
+  return normalized !== '' && normalized !== '--' && normalized !== '-';
+}
+
+function findTodayRecordFromCurrentWeek(records, now = new Date()) {
+  if (!Array.isArray(records)) return null;
+
+  const explicitlyToday = records.find((record) => record?.isToday === true);
+  if (explicitlyToday) return explicitlyToday;
+
+  const todayDateKey = getLocalDateKey(now);
+  const exactDateRecord = records.find((record) => {
+    const recordDate =
+      record?.date ??
+      record?.attendanceDate ??
+      record?.attendanceDay ??
+      '';
+
+    return getAttendanceDateKey(recordDate) === todayDateKey;
+  });
+
+  if (exactDateRecord) return exactDateRecord;
+
+  /*
+   * Weekday fallback is safe only for the CURRENT WEEK response.
+   * Never use this path for Last Week, Month, or Last Month data.
+   */
+  const currentDayLong = now
+    .toLocaleDateString('en-US', { weekday: 'long' })
+    .toLowerCase();
+  const currentDayShort = now
+    .toLocaleDateString('en-US', { weekday: 'short' })
+    .toLowerCase();
+
+  return (
+    records.find((record) => {
+      const day = String(record?.day ?? record?.dayName ?? '')
+        .trim()
+        .toLowerCase();
+
+      return day === currentDayLong || day === currentDayShort;
+    }) || null
+  );
+}
+
+function formatLocalTimeForState(date = new Date()) {
+  return [
+    String(date.getHours()).padStart(2, '0'),
+    String(date.getMinutes()).padStart(2, '0'),
+    String(date.getSeconds()).padStart(2, '0'),
+  ].join(':');
+}
+
 export default function MyAttendanceScreen() {
   const { width } = useWindowDimensions();
   const isSmallDevice = width < 360;
@@ -107,14 +269,20 @@ export default function MyAttendanceScreen() {
 
   const [activeTab, setActiveTab] = useState('Week');
   const [historyList, setHistoryList] = useState([]);
+  const [historyError, setHistoryError] = useState('');
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isLoadingHistory, setIsLoadingHistory] = useState(true);
-
   const [isCheckedIn, setIsCheckedIn] = useState(false);
   const [isCheckedOut, setIsCheckedOut] = useState(false);
   const [checkInTime, setCheckInTime] = useState('--');
   const [checkOutTime, setCheckOutTime] = useState('--');
   const [totalHours, setTotalHours] = useState('--');
+  const [isLoadingToday, setIsLoadingToday] = useState(true);
+  const [todayError, setTodayError] = useState('');
+  const [attendanceSettings, setAttendanceSettings] = useState(null);
+  const [isLoadingAttendanceSettings, setIsLoadingAttendanceSettings] = useState(true);
+  const [attendanceSettingsError, setAttendanceSettingsError] = useState('');
+  const [currentTime, setCurrentTime] = useState(() => new Date());
 
   const [isCheckingIn, setIsCheckingIn] = useState(false);
   const [isCheckingOut, setIsCheckingOut] = useState(false);
@@ -127,60 +295,174 @@ export default function MyAttendanceScreen() {
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(30)).current;
   const pulseAnim = useRef(new Animated.Value(1)).current;
+  const historyRequestIdRef = useRef(0);
+  const todayRequestIdRef = useRef(0);
+  const activeTabRef = useRef(activeTab);
 
-  const loadHistoryData = useCallback(async (period, isPullToRefresh = false) => {
-    if (isPullToRefresh) {
-      setIsRefreshing(true);
-    } else {
-      setIsLoadingHistory(true);
+  const effectiveCheckInStartTime =
+    attendanceSettings?.checkInStartTime || DEFAULT_CHECK_IN_START_TIME;
+  const checkInOpeningLabel =
+    formatBackendTime12h(effectiveCheckInStartTime) || '8:55 AM';
+  const isBeforeCheckInStartTime = isBeforeConfiguredTime(
+    currentTime,
+    effectiveCheckInStartTime
+  );
+  const isCheckInDisabled =
+    isCheckedIn ||
+    isCheckedOut ||
+    isLoadingToday ||
+    isCheckingIn ||
+    isCheckingOut ||
+    isLoadingAttendanceSettings ||
+    isBeforeCheckInStartTime;
+  const isCheckOutDisabled =
+    isLoadingToday ||
+    isCheckingIn ||
+    isCheckingOut ||
+    !isCheckedIn ||
+    isCheckedOut;
+  const attendanceSubtitle = isCheckedOut
+    ? 'Your checkout has been recorded for today.'
+    : isCheckedIn
+      ? 'Checkout remains available after your workday.'
+      : isLoadingAttendanceSettings
+        ? 'Loading attendance timing...'
+        : isBeforeCheckInStartTime
+          ? `Check-in opens at ${checkInOpeningLabel}.`
+          : 'Check-in is available now.';
+
+  const applyTodayRecord = useCallback((record) => {
+    const rawCheckIn =
+      record?.checkIn ??
+      record?.checkInTime ??
+      record?.checkinTime ??
+      record?.inTime ??
+      '';
+
+    const rawCheckOut =
+      record?.checkOut ??
+      record?.checkOutTime ??
+      record?.checkoutTime ??
+      record?.outTime ??
+      '';
+
+    const rawHours =
+      record?.hours ??
+      record?.totalHours ??
+      record?.workingHours ??
+      record?.workedHours ??
+      record?.duration ??
+      '--';
+
+    const checkedIn = hasValidAttendanceTime(rawCheckIn);
+    const checkedOut = hasValidAttendanceTime(rawCheckOut);
+
+    setIsCheckedIn(checkedIn);
+    setIsCheckedOut(checkedOut);
+    setCheckInTime(checkedIn ? formatTime12h(rawCheckIn) : '--');
+    setCheckOutTime(checkedOut ? formatTime12h(rawCheckOut) : '--');
+    setTotalHours(
+      rawHours !== null &&
+        rawHours !== undefined &&
+        String(rawHours).trim() !== ''
+        ? String(rawHours)
+        : '--'
+    );
+  }, []);
+
+  const resetTodayStatus = useCallback(() => {
+    setIsCheckedIn(false);
+    setIsCheckedOut(false);
+    setCheckInTime('--');
+    setCheckOutTime('--');
+    setTotalHours('--');
+  }, []);
+
+  const loadTodayStatus = useCallback(async ({ silent = false } = {}) => {
+    const requestId = todayRequestIdRef.current + 1;
+    todayRequestIdRef.current = requestId;
+    if (!silent) setIsLoadingToday(true);
+
+    try {
+      const res = await getAttendanceHistory('Week');
+
+      if (requestId !== todayRequestIdRef.current) return;
+
+      if (!res.success || !Array.isArray(res.data)) {
+        setTodayError(res.message || 'Unable to load today attendance.');
+        return;
+      }
+
+      const todayRecord = findTodayRecordFromCurrentWeek(res.data, new Date());
+
+      // if (__DEV__) {
+      //   console.log('[Attendance Today from Week]', {
+      //     found: Boolean(todayRecord),
+      //     isToday: todayRecord?.isToday,
+      //     day: todayRecord?.day,
+      //     date: todayRecord?.date ?? todayRecord?.attendanceDate,
+      //     checkIn: todayRecord?.checkIn ?? todayRecord?.checkInTime,
+      //     checkOut: todayRecord?.checkOut ?? todayRecord?.checkOutTime,
+      //     hours: todayRecord?.hours ?? todayRecord?.totalHours,
+      //   });
+      // }
+
+      if (!todayRecord) {
+        resetTodayStatus();
+        setTodayError('');
+        return;
+      }
+
+      applyTodayRecord(todayRecord);
+      setTodayError('');
+    } catch (error) {
+      setTodayError(error?.message || 'Unable to load today attendance.');
+    } finally {
+      if (requestId === todayRequestIdRef.current && !silent) {
+        setIsLoadingToday(false);
+      }
     }
+  }, [applyTodayRecord, resetTodayStatus]);
+
+  const loadAttendanceSettings = useCallback(async () => {
+    setIsLoadingAttendanceSettings(true);
+
+    const result = await getAttendanceSettings();
+
+    if (result.success && result.data?.checkInStartTime) {
+      setAttendanceSettings(result.data);
+      setAttendanceSettingsError('');
+    } else {
+      setAttendanceSettingsError(result.message || 'Unable to load attendance timing.');
+    }
+
+    setIsLoadingAttendanceSettings(false);
+  }, []);
+
+  const loadHistoryData = useCallback(async (period, { silent = false } = {}) => {
+    const requestId = historyRequestIdRef.current + 1;
+    historyRequestIdRef.current = requestId;
+    if (!silent) setIsLoadingHistory(true);
+    setHistoryError('');
 
     const res = await getAttendanceHistory(period);
 
-    if (isPullToRefresh) {
-      setIsRefreshing(false);
-    } else {
-      setIsLoadingHistory(false);
-    }
+    if (requestId !== historyRequestIdRef.current) return;
 
-    if (res.success && Array.isArray(res.data) && res.data.length > 0) {
+    if (res.success && Array.isArray(res.data)) {
       setHistoryList(res.data);
-
-      const now = new Date();
-      const currentDayName = now.toLocaleDateString('en-US', { weekday: 'long' });
-      const currentDayShort = now.toLocaleDateString('en-US', { weekday: 'short' });
-
-      const todayRecord = res.data.find((r) => {
-        if (r.isToday) return true;
-        if (r.day && (r.day.toLowerCase() === currentDayName.toLowerCase() || r.day.toLowerCase() === currentDayShort.toLowerCase())) {
-          return true;
-        }
-        return false;
-      });
-
-      if (todayRecord) {
-        if (todayRecord.checkIn && todayRecord.checkIn !== null && todayRecord.checkIn !== '--') {
-          setIsCheckedIn(true);
-          setCheckInTime(formatTime12h(todayRecord.checkIn));
-        } else {
-          setIsCheckedIn(false);
-          setCheckInTime('--');
-        }
-
-        if (todayRecord.checkOut && todayRecord.checkOut !== null && todayRecord.checkOut !== '--') {
-          setIsCheckedOut(true);
-          setCheckOutTime(formatTime12h(todayRecord.checkOut));
-        } else {
-          setIsCheckedOut(false);
-          setCheckOutTime('--');
-        }
-
-        if (todayRecord.hours && todayRecord.hours !== null) {
-          setTotalHours(todayRecord.hours);
-        }
-      }
+      setHistoryError('');
+    } else {
+      setHistoryList([]);
+      setHistoryError(res.message || 'Unable to load attendance history.');
     }
+
+    if (!silent) setIsLoadingHistory(false);
   }, []);
+
+  useEffect(() => {
+    activeTabRef.current = activeTab;
+  }, [activeTab]);
 
   useEffect(() => {
     Animated.parallel([
@@ -196,23 +478,67 @@ export default function MyAttendanceScreen() {
     );
     pulseLoop.start();
 
-    loadHistoryData(activeTab);
-
     return () => pulseLoop.stop();
-  }, [activeTab, loadHistoryData]);
+  }, [fadeAnim, pulseAnim, slideAnim]);
+
+  useFocusEffect(
+    useCallback(() => {
+      setCurrentTime(new Date());
+      loadTodayStatus();
+      loadHistoryData(activeTabRef.current);
+      loadAttendanceSettings();
+    }, [loadAttendanceSettings, loadHistoryData, loadTodayStatus])
+  );
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setCurrentTime(new Date());
+    }, 15000);
+
+    return () => clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      if (nextState === 'active') {
+        setCurrentTime(new Date());
+        loadTodayStatus({ silent: true });
+        loadAttendanceSettings();
+        loadHistoryData(activeTabRef.current, { silent: true });
+      }
+    });
+
+    return () => subscription.remove();
+  }, [loadAttendanceSettings, loadHistoryData, loadTodayStatus]);
 
   const handleTabChange = (tabName) => {
+    activeTabRef.current = tabName;
     setActiveTab(tabName);
     loadHistoryData(tabName);
   };
 
+  const handleRefresh = useCallback(async () => {
+    setIsRefreshing(true);
+    await Promise.all([
+      loadTodayStatus({ silent: true }),
+      loadHistoryData(activeTab, { silent: true }),
+      loadAttendanceSettings({ silent: true }),
+    ]);
+    setCurrentTime(new Date());
+    setIsRefreshing(false);
+  }, [activeTab, loadAttendanceSettings, loadHistoryData, loadTodayStatus]);
+
   const handleCheckInPress = async () => {
     const now = new Date();
-    const currentHours = now.getHours();
-    const currentMinutes = now.getMinutes();
+    const configuredStartTime =
+      attendanceSettings?.checkInStartTime || DEFAULT_CHECK_IN_START_TIME;
 
-    if (currentHours < 8 || (currentHours === 8 && currentMinutes < 55)) {
-      Alert.alert('Check-In Restricted', 'Check-in opens at 8:55 AM.');
+    // Device time gates the UI, but backend validation remains authoritative.
+    if (isBeforeConfiguredTime(now, configuredStartTime)) {
+      Alert.alert(
+        'Check-In Restricted',
+        `Check-in opens at ${formatBackendTime12h(configuredStartTime) || '8:55 AM'}.`
+      );
       return;
     }
 
@@ -233,15 +559,32 @@ export default function MyAttendanceScreen() {
     setIsCheckingIn(false);
 
     if (res.success) {
-      setIsCheckedIn(true);
-      const serverTime = res.data?.checkInTime
-        ? formatTime12h(res.data.checkInTime)
-        : now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      const rawServerCheckIn =
+        res.data?.checkIn ??
+        res.data?.checkInTime ??
+        res.data?.data?.checkIn ??
+        res.data?.data?.checkInTime ??
+        '';
+      const successfulCheckInTime = rawServerCheckIn || formatLocalTimeForState(now);
+      const serverTime = formatTime12h(successfulCheckInTime);
 
+      setIsCheckedIn(true);
+      setIsCheckedOut(false);
       setCheckInTime(serverTime);
+      setCheckOutTime('--');
+      if (totalHours === '--' || !totalHours) {
+        setTotalHours('0h 0m');
+      }
+
       Alert.alert('Check-In Successful!', res.message || `Checked in at ${serverTime}`);
-      loadHistoryData(activeTab);
+      await Promise.all([
+        loadTodayStatus({ silent: true }),
+        loadHistoryData(activeTab, { silent: true }),
+      ]);
     } else {
+      if ((res.message || '').toLowerCase().includes('already checked in')) {
+        loadTodayStatus({ silent: true });
+      }
       Alert.alert('Check-In Failed', res.message || 'Unable to check in. Please try again.');
     }
   };
@@ -270,21 +613,42 @@ export default function MyAttendanceScreen() {
     setIsCheckingOut(false);
 
     if (res.success) {
-      setIsCheckedOut(true);
-      const serverTime = res.data?.checkOutTime
-        ? formatTime12h(res.data.checkOutTime)
-        : new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      const now = new Date();
+      const rawServerCheckOut =
+        res.data?.checkOut ??
+        res.data?.checkOutTime ??
+        res.data?.data?.checkOut ??
+        res.data?.data?.checkOutTime ??
+        '';
+      const rawServerHours =
+        res.data?.hours ??
+        res.data?.workingHours ??
+        res.data?.totalHours ??
+        res.data?.data?.hours ??
+        res.data?.data?.workingHours ??
+        res.data?.data?.totalHours ??
+        '';
+      const successfulCheckOutTime = rawServerCheckOut || formatLocalTimeForState(now);
+      const serverTime = formatTime12h(successfulCheckOutTime);
 
+      setIsCheckedIn(true);
+      setIsCheckedOut(true);
       setCheckOutTime(serverTime);
-      if (res.data?.workingHours) {
-        setTotalHours(res.data.workingHours);
+      if (rawServerHours !== null && rawServerHours !== undefined && String(rawServerHours).trim()) {
+        setTotalHours(String(rawServerHours));
       }
 
       Alert.alert('Check-Out Successful!', res.message || `Checked out at ${serverTime}`);
-      loadHistoryData(activeTab);
+      await Promise.all([
+        loadTodayStatus({ silent: true }),
+        loadHistoryData(activeTab, { silent: true }),
+      ]);
     } else if (res.requiresReason) {
       setIsReasonModalVisible(true);
     } else {
+      if ((res.message || '').toLowerCase().includes('already checked out')) {
+        loadTodayStatus({ silent: true });
+      }
       Alert.alert('Check-Out Failed', res.message || 'Unable to check out. Please try again.');
     }
   };
@@ -306,13 +670,37 @@ export default function MyAttendanceScreen() {
     setIsSubmittingReason(false);
 
     if (res.success) {
+      const now = new Date();
+      const rawServerCheckOut =
+        res.data?.checkOut ??
+        res.data?.checkOutTime ??
+        res.data?.data?.checkOut ??
+        res.data?.data?.checkOutTime ??
+        '';
+      const rawServerHours =
+        res.data?.hours ??
+        res.data?.workingHours ??
+        res.data?.totalHours ??
+        res.data?.data?.hours ??
+        res.data?.data?.workingHours ??
+        res.data?.data?.totalHours ??
+        '';
+      const successfulCheckOutTime = rawServerCheckOut || formatLocalTimeForState(now);
+
+      setIsCheckedIn(true);
+      setIsCheckedOut(true);
+      setCheckOutTime(formatTime12h(successfulCheckOutTime));
+      if (rawServerHours !== null && rawServerHours !== undefined && String(rawServerHours).trim()) {
+        setTotalHours(String(rawServerHours));
+      }
+
       setIsReasonModalVisible(false);
       setLocationReason('');
-      setIsCheckedOut(true);
-      const timeNowFormatted = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      setCheckOutTime(timeNowFormatted);
       Alert.alert('Check-Out Submitted', 'Your location change reason and checkout have been recorded.');
-      loadHistoryData(activeTab);
+      await Promise.all([
+        loadTodayStatus({ silent: true }),
+        loadHistoryData(activeTab, { silent: true }),
+      ]);
     } else {
       Alert.alert('Submission Failed', res.message || 'Failed to submit location reason. Please try again.');
     }
@@ -438,12 +826,24 @@ export default function MyAttendanceScreen() {
               {isCheckedOut ? 'Workday completed' : isCheckedIn ? 'You are checked in' : 'Ready for attendance'}
             </Text>
             <Text style={styles.heroSubtitle}>
-              {isCheckedOut
-                ? 'Your checkout has been recorded for today.'
-                : isCheckedIn
-                  ? 'Checkout remains available after your workday.'
-                  : 'Check-in opens at 8:55 AM.'}
+              {attendanceSubtitle}
             </Text>
+            {!!attendanceSettingsError && (
+              <View style={styles.settingsNotice}>
+                <Ionicons name="alert-circle-outline" size={15} color={colors.warning} />
+                <Text style={styles.settingsNoticeText} numberOfLines={2}>
+                  {attendanceSettingsError}
+                </Text>
+              </View>
+            )}
+            {!!todayError && (
+              <View style={styles.settingsNotice}>
+                <Ionicons name="refresh-circle-outline" size={15} color={colors.warning} />
+                <Text style={styles.settingsNoticeText} numberOfLines={2}>
+                  {todayError}
+                </Text>
+              </View>
+            )}
           </View>
         </View>
 
@@ -458,14 +858,14 @@ export default function MyAttendanceScreen() {
             style={[
               styles.actionButton,
               styles.checkInButton,
-              (isCheckedIn || isCheckingIn) && styles.actionDisabled,
+              isCheckInDisabled && styles.actionDisabled,
             ]}
             onPress={handleCheckInPress}
-            disabled={isCheckedIn || isCheckingIn}
+            disabled={isCheckInDisabled}
             activeOpacity={0.85}
             accessibilityRole="button"
             accessibilityLabel="Check in"
-            accessibilityState={{ disabled: isCheckedIn || isCheckingIn }}
+            accessibilityState={{ disabled: isCheckInDisabled }}
           >
             {isCheckingIn ? (
               <ActivityIndicator color={colors.white} size="small" />
@@ -481,14 +881,14 @@ export default function MyAttendanceScreen() {
             style={[
               styles.actionButton,
               styles.checkOutButton,
-              (!isCheckedIn || isCheckedOut || isCheckingOut) && styles.actionDisabled,
+              isCheckOutDisabled && styles.actionDisabled,
             ]}
             onPress={handleCheckOutPress}
-            disabled={!isCheckedIn || isCheckedOut || isCheckingOut}
+            disabled={isCheckOutDisabled}
             activeOpacity={0.85}
             accessibilityRole="button"
             accessibilityLabel="Check out"
-            accessibilityState={{ disabled: !isCheckedIn || isCheckedOut || isCheckingOut }}
+            accessibilityState={{ disabled: isCheckOutDisabled }}
           >
             {isCheckingOut ? (
               <ActivityIndicator color={colors.white} size="small" />
@@ -548,6 +948,12 @@ export default function MyAttendanceScreen() {
           <Text style={styles.loadingText}>Loading history records...</Text>
         </View>
       )}
+      {!!historyError && (
+        <View style={styles.historyErrorBox}>
+          <Ionicons name="alert-circle-outline" size={18} color={colors.warning} />
+          <Text style={styles.historyErrorText}>{historyError}</Text>
+        </View>
+      )}
     </Animated.View>
   );
 
@@ -573,7 +979,7 @@ export default function MyAttendanceScreen() {
         refreshControl={
           <RefreshControl
             refreshing={isRefreshing}
-            onRefresh={() => loadHistoryData(activeTab, true)}
+            onRefresh={handleRefresh}
             colors={[colors.primary]}
             tintColor={colors.primary}
           />
@@ -722,6 +1128,26 @@ const styles = StyleSheet.create({
     fontWeight: fontWeights.medium,
     lineHeight: 19,
     marginTop: spacing.xs,
+  },
+  settingsNotice: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: spacing.xs,
+    marginTop: spacing.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    borderRadius: radii.lg,
+    backgroundColor: colors.warningBackground,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  settingsNoticeText: {
+    flex: 1,
+    minWidth: 0,
+    color: colors.warning,
+    fontSize: fontSizes.sm,
+    fontWeight: fontWeights.semibold,
+    lineHeight: 16,
   },
   metricsGrid: {
     flexDirection: 'row',
@@ -919,6 +1345,24 @@ const styles = StyleSheet.create({
     fontWeight: fontWeights.medium,
     marginTop: spacing.md,
   },
+  historyErrorBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    padding: spacing.lg,
+    marginBottom: spacing.lg,
+    borderRadius: radii.xl,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.warningBackground,
+  },
+  historyErrorText: {
+    flex: 1,
+    minWidth: 0,
+    color: colors.warning,
+    fontSize: fontSizes.base,
+    fontWeight: fontWeights.semibold,
+  },
   historyRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1071,3 +1515,4 @@ const styles = StyleSheet.create({
     color: colors.white,
   },
 });
+

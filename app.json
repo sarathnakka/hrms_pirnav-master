@@ -1,5 +1,6 @@
 {
   "expo": {
+    "owner": "pirnav-software-solutions-pvt-ltd",
     "name": "PIRNAV HRMS",
     "slug": "hrms-pirnav",
     "version": "1.0.0",
@@ -14,9 +15,11 @@
     },
     "ios": {
       "supportsTablet": true,
-      "icon": "./assets/app-icon.png"
+      "icon": "./assets/app-icon.png",
+      "bundleIdentifier": "com.pirnav.hrms"
     },
     "android": {
+      "package": "com.pirnav.hrms",
       "icon": "./assets/app-icon.png",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon-foreground.png",
@@ -30,6 +33,11 @@
     },
     "plugins": [
       "@react-native-community/datetimepicker"
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "a6cc1c31-570d-4288-92b7-62c7937ff306"
+      }
+    }
   }
 }

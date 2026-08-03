@@ -1,4 +1,6 @@
 import { environment } from '../config/environment';
+import { getUserSession, isSessionExpired } from '../features/auth/authStorage';
+import { notifySessionExpired } from '../features/auth/sessionManager';
 
 const DEFAULT_TIMEOUT_MS = 20000;
 
@@ -37,7 +39,38 @@ async function parseResponse(response) {
   }
 }
 
-async function request(endpoint, { method = 'GET', body, token, headers, timeout = DEFAULT_TIMEOUT_MS, signal } = {}) {
+function createSessionExpiredError() {
+  const error = new Error('Your session has expired. Please sign in again.');
+  error.status = 401;
+  error.code = 'SESSION_EXPIRED';
+  return error;
+}
+
+async function request(
+  endpoint,
+  {
+    method = 'GET',
+    body,
+    token,
+    headers,
+    timeout = DEFAULT_TIMEOUT_MS,
+    signal,
+    skipAuth = false,
+    requiresAuth = true,
+    isPublic = false,
+  } = {}
+) {
+  const shouldValidateSession = Boolean(token) && requiresAuth !== false && !skipAuth && !isPublic;
+
+  if (shouldValidateSession) {
+    const session = await getUserSession();
+
+    if (!session.token || isSessionExpired(session)) {
+      notifySessionExpired('expired');
+      throw createSessionExpiredError();
+    }
+  }
+
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeout);
   const abortRequest = () => controller.abort();
@@ -74,6 +107,11 @@ async function request(endpoint, { method = 'GET', body, token, headers, timeout
     const data = await parseResponse(response);
 
     if (!response.ok) {
+      if (response.status === 401 && shouldValidateSession) {
+        notifySessionExpired('unauthorized');
+        throw createSessionExpiredError();
+      }
+
       const error = new Error(
         extractErrorMessage(data, 'Request failed. Please try again.')
       );

@@ -18,7 +18,7 @@ export async function loginUser(email, password) {
   };
 
   const result = await toResult(
-    apiClient.post('/api/User/login', payload),
+    apiClient.post('/api/User/login', payload, { skipAuth: true }),
     'Invalid credentials or server error.'
   );
 
@@ -43,7 +43,7 @@ export async function loginUser(email, password) {
 }
 
 export async function getRoles() {
-  const result = await toResult(apiClient.get('/api/Roles'), 'Failed to fetch roles.');
+  const result = await toResult(apiClient.get('/api/Roles', { skipAuth: true }), 'Failed to fetch roles.');
   if (!result.success) return result;
 
   const data = result.data;
@@ -80,14 +80,14 @@ export async function registerUser(firstName, lastName, email, password, confirm
   }
 
   return toResult(
-    apiClient.post('/api/User/register', payload),
+    apiClient.post('/api/User/register', payload, { skipAuth: true }),
     'Registration failed. Please try again.'
   );
 }
 
 export async function forgotPassword(email) {
   const result = await toResult(
-    apiClient.post('/api/User/forgot-password', { email: email.trim() }),
+    apiClient.post('/api/User/forgot-password', { email: email.trim() }, { skipAuth: true }),
     'Failed to request password reset. Please try again.'
   );
 
@@ -104,7 +104,7 @@ export async function verifyOtp(email, otp) {
     apiClient.post('/api/User/verify-otp', {
       email: email.trim(),
       otp: otp.trim(),
-    }),
+    }, { skipAuth: true }),
     'Invalid or expired OTP. Please try again.'
   );
 
@@ -123,7 +123,7 @@ export async function resetPassword(password, confirmPassword, email = '') {
   }
 
   const result = await toResult(
-    apiClient.post('/api/User/reset-password', payload),
+    apiClient.post('/api/User/reset-password', payload, { skipAuth: true }),
     'Failed to reset password. Please try again.'
   );
 
