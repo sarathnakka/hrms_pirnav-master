@@ -22,6 +22,11 @@ import LogoHeader from '../../../shared/components/LogoHeader';
 import { colors, fontSizes, fontWeights, radii, shadows, sizes, spacing } from '../../../theme';
 import { useAuth } from '../AuthContext';
 import { loginUser } from '../authApi';
+import {
+  clearRememberedCredentials,
+  getRememberedCredentials,
+  saveRememberedCredentials,
+} from '../authStorage';
 
 export default function LoginScreen({ navigation }) {
   const { login } = useAuth();
@@ -49,6 +54,33 @@ export default function LoginScreen({ navigation }) {
   const [showPassword, setShowPassword] = useState(false);
   const [rememberMe, setRememberMe] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [isRestoringRememberedLogin, setIsRestoringRememberedLogin] = useState(true);
+
+  useEffect(() => {
+    let mounted = true;
+
+    const restoreRememberedLogin = async () => {
+      try {
+        const remembered = await getRememberedCredentials();
+
+        if (mounted && remembered.enabled) {
+          setEmail(remembered.email);
+          setPassword(remembered.password);
+          setRememberMe(true);
+        }
+      } finally {
+        if (mounted) {
+          setIsRestoringRememberedLogin(false);
+        }
+      }
+    };
+
+    restoreRememberedLogin();
+
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   const animatePress = (callback) => {
     Animated.sequence([
@@ -73,6 +105,12 @@ export default function LoginScreen({ navigation }) {
 
     if (result.success) {
       try {
+        if (rememberMe) {
+          saveRememberedCredentials(email, password).catch(() => {});
+        } else {
+          clearRememberedCredentials().catch(() => {});
+        }
+
         await login(result.token, result.data);
       } catch (error) {
         Alert.alert('Sign In Failed', error.message);
@@ -140,6 +178,9 @@ export default function LoginScreen({ navigation }) {
                   keyboardType="email-address"
                   autoCapitalize="none"
                   autoCorrect={false}
+                  autoComplete="email"
+                  textContentType="username"
+                  importantForAutofill="yes"
                 />
               </View>
             </View>
@@ -162,6 +203,9 @@ export default function LoginScreen({ navigation }) {
                   placeholderTextColor={colors.placeholder}
                   secureTextEntry={!showPassword}
                   autoCapitalize="none"
+                  autoComplete="current-password"
+                  textContentType="password"
+                  importantForAutofill="yes"
                 />
                 <TouchableOpacity
                   onPress={() => setShowPassword(!showPassword)}
@@ -210,10 +254,10 @@ export default function LoginScreen({ navigation }) {
               <TouchableOpacity
                 style={[styles.primaryButton, isSmallDevice && { height: 48 }]}
                 onPress={() => animatePress(handleSignIn)}
-                disabled={isLoading}
+                disabled={isLoading || isRestoringRememberedLogin}
                 activeOpacity={0.85}
               >
-                {isLoading ? (
+                {isLoading || isRestoringRememberedLogin ? (
                   <ActivityIndicator color={colors.white} size="small" />
                 ) : (
                   <Text style={styles.primaryButtonText}>Sign In</Text>

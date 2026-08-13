@@ -9,7 +9,6 @@ import {
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
@@ -22,13 +21,13 @@ import { Ionicons } from '@expo/vector-icons';
 import { usePreventRemove } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import AppTextInput from '../../shared/components/AppTextInput';
 import { useAuth } from '../auth/AuthContext';
 import { colors, fontSizes, fontWeights, lineHeights, radii, shadows, sizes, spacing } from '../../theme';
 import {
   BANK_OPTIONS,
   BLOOD_GROUP_OPTIONS,
   DESIGNATION_OPTIONS,
-  DOCUMENT_GROUPS,
   EMPTY_BANK,
   EMPTY_EDUCATION,
   EMPTY_EXPERIENCE,
@@ -45,9 +44,11 @@ import {
   experienceYears,
   formatDisplayDate,
   formatFileSize,
+  formatFileSizeMB,
   maskLastFour,
   maskPan,
   normalizeAgreements,
+  normalizeDocumentChecklist,
   normalizeDepartments,
   normalizeDocuments,
   normalizeEmployeeProfile,
@@ -75,6 +76,63 @@ import {
 const MAX_DOCUMENT_SIZE = 3 * 1024 * 1024;
 const MAX_SIGNATURE_SIZE = 10 * 1024 * 1024;
 const SUPPORTED_FILE_TYPES = ['application/pdf', 'image/jpeg', 'image/jpg', 'image/png'];
+const DOCUMENT_LABELS = {
+  '10th Certificate': '10th Certificate',
+  'Intermediate / 12th Certificate': 'Intermediate / 12th Certificate',
+  'Degree Certificate': 'Degree Certificate',
+  'Post Graduation Certificate': 'Post-Graduation Certificate',
+  'Aadhaar Card': 'Aadhaar Card',
+  'PAN Card': 'PAN Card',
+  'Passport Size Photo': 'Passport-size Photo',
+  'Offer Letter': 'Offer Letter',
+  'Appointment Letter': 'Appointment Letter',
+  'Relieving Letter': 'Relieving Letter',
+  'Payslip Month 1': 'Payslip - Month 1',
+  'Payslip Month 2': 'Payslip - Month 2',
+  'Payslip Month 3': 'Payslip - Month 3',
+};
+
+function normalizeDocumentType(value) {
+  return String(value || '').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+function getFriendlyDocumentLabel(value) {
+  return DOCUMENT_LABELS[value] || value || 'Document';
+}
+
+function getDocumentStatusTone(status, uploaded) {
+  const normalized = String(status || '').trim().toLowerCase();
+  if (normalized.includes('reject')) return 'error';
+  if (normalized.includes('verify') || normalized.includes('approved')) return 'success';
+  if (uploaded) return 'warning';
+  return 'neutral';
+}
+
+function getDocumentStatusText(status, uploaded) {
+  if (!uploaded) return 'Not uploaded';
+  return String(status || '').trim() || 'Pending';
+}
+
+function getFileExtension(file = {}) {
+  const name = String(file.name || file.fileName || '').trim();
+  const match = /\.([A-Za-z0-9]+)$/.exec(name);
+  return match ? match[1].toLowerCase() : '';
+}
+
+function isSupportedDocumentFile(file = {}) {
+  const extension = getFileExtension(file);
+  const mimeType = String(file.mimeType || file.type || '').toLowerCase();
+  return (
+    SUPPORTED_FILE_TYPES.includes(mimeType) ||
+    ['pdf', 'jpg', 'jpeg', 'png'].includes(extension)
+  );
+}
+
+function delay(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
 
 function valueText(value) {
   if (value === null || value === undefined || value === '') return '-';
@@ -87,7 +145,7 @@ function firstError(errors) {
 
 const STEP_LABELS = ['Personal', 'Bank', 'Education', 'Experience', 'Documents', 'Review'];
 
-function Stepper({ step, maxStep, onStepPress }) {
+function Stepper({ step, maxStep, onStepPress, completedStepIndexes = [], showCompletion = false }) {
   const scrollRef = useRef(null);
 
   useEffect(() => {
@@ -110,9 +168,17 @@ function Stepper({ step, maxStep, onStepPress }) {
         contentContainerStyle={styles.numberStepper}
       >
         {STEP_LABELS.map((label, index) => {
-          const isDone = index < step;
           const isCurrent = index === step;
           const unlocked = index <= maxStep;
+          const isCompleted = Boolean(showCompletion && !isCurrent && completedStepIndexes.includes(index));
+          const isConnectorCompleted = Boolean(showCompletion && completedStepIndexes.includes(index));
+          const accessibilityStateLabel = isCurrent
+            ? 'current'
+            : isCompleted
+              ? 'completed'
+              : unlocked
+                ? 'available'
+                : 'locked';
 
           return (
             <View key={label} style={styles.stepItemWrap}>
@@ -127,14 +193,14 @@ function Stepper({ step, maxStep, onStepPress }) {
                 activeOpacity={0.82}
                 accessibilityRole="button"
                 accessibilityState={{ disabled: !unlocked, selected: isCurrent }}
-                accessibilityLabel={`${label}, step ${index + 1} of ${STEPS.length}`}
+                accessibilityLabel={`${label}, step ${index + 1} of ${STEPS.length}, ${accessibilityStateLabel}`}
               >
                 <View style={[
                   styles.stepCircle,
-                  isDone && styles.stepCircleDone,
+                  isCompleted && styles.stepCircleDone,
                   isCurrent && styles.stepCircleCurrent,
                 ]}>
-                  {isDone ? (
+                  {isCompleted ? (
                     <Ionicons name="checkmark" size={14} color={colors.white} />
                   ) : (
                     <Text style={[styles.stepCircleText, isCurrent && styles.stepCircleTextCurrent]}>
@@ -147,7 +213,7 @@ function Stepper({ step, maxStep, onStepPress }) {
                 </Text>
               </TouchableOpacity>
               {index < STEP_LABELS.length - 1 && (
-                <View style={[styles.stepConnector, index < step && styles.stepConnectorDone]} />
+                <View style={[styles.stepConnector, isConnectorCompleted && styles.stepConnectorDone]} />
               )}
             </View>
           );
@@ -161,7 +227,7 @@ function Field({ label, value, onChangeText, error, keyboardType, secureTextEntr
   return (
     <View style={styles.fieldWrap}>
       <Text style={styles.label}>{label}</Text>
-      <TextInput
+      <AppTextInput
         style={[styles.input, multiline && styles.multilineInput, error && styles.inputError, !editable && styles.inputDisabled]}
         value={value}
         onChangeText={onChangeText}
@@ -178,21 +244,22 @@ function Field({ label, value, onChangeText, error, keyboardType, secureTextEntr
   );
 }
 
-function OptionField({ label, value, options, onChange, error }) {
+function OptionField({ label, value, options, onChange, error, disabled = false }) {
   return (
     <View style={styles.fieldWrap}>
       <Text style={styles.label}>{label}</Text>
-      <View style={[styles.optionsBox, error && styles.inputError]}>
+      <View style={[styles.optionsBox, error && styles.inputError, disabled && styles.readOnlyControl]}>
         {options.map((option) => {
           const selected = value === option;
           return (
             <TouchableOpacity
               key={option}
-              style={[styles.optionChip, selected && styles.optionChipActive]}
+              style={[styles.optionChip, selected && styles.optionChipActive, disabled && styles.optionChipDisabled]}
               onPress={() => onChange(option)}
+              disabled={disabled}
               activeOpacity={0.8}
               accessibilityRole="button"
-              accessibilityState={{ selected }}
+              accessibilityState={{ selected, disabled }}
               accessibilityLabel={`${label}: ${option}`}
             >
               <Text style={[styles.optionText, selected && styles.optionTextActive]}>{option}</Text>
@@ -219,7 +286,7 @@ function normalizeSelectionOptions(options) {
   }).filter((option) => option.label && option.value !== undefined && option.value !== null);
 }
 
-function SelectionField({ label, value, options, onChange, error, placeholder = 'Select', searchable = true }) {
+function SelectionField({ label, value, options, onChange, error, placeholder = 'Select', searchable = true, disabled = false }) {
   const [visible, setVisible] = useState(false);
   const [query, setQuery] = useState('');
   const normalizedOptions = useMemo(() => normalizeSelectionOptions(options), [options]);
@@ -237,10 +304,12 @@ function SelectionField({ label, value, options, onChange, error, placeholder = 
     <View style={styles.fieldWrap}>
       <Text style={styles.label}>{label}</Text>
       <TouchableOpacity
-        style={[styles.selectField, error && styles.inputError]}
+        style={[styles.selectField, error && styles.inputError, disabled && styles.inputDisabled]}
         onPress={() => setVisible(true)}
+        disabled={disabled}
         activeOpacity={0.82}
         accessibilityRole="button"
+        accessibilityState={{ disabled }}
         accessibilityLabel={`${label}. ${selected?.label || placeholder}`}
       >
         <Text style={[styles.selectFieldText, !selected && styles.placeholderText]} numberOfLines={1}>
@@ -265,7 +334,7 @@ function SelectionField({ label, value, options, onChange, error, placeholder = 
             {searchable && (
               <View style={styles.selectorSearch}>
                 <Ionicons name="search-outline" size={18} color={colors.textSecondary} />
-                <TextInput
+                <AppTextInput
                   value={query}
                   onChangeText={setQuery}
                   placeholder={`Search ${label.toLowerCase()}`}
@@ -285,15 +354,19 @@ function SelectionField({ label, value, options, onChange, error, placeholder = 
                   <View key={`${option.group || 'option'}-${option.value}`}>
                     {showGroup && <Text style={styles.selectorGroup}>{option.group}</Text>}
                     <TouchableOpacity
-                      style={[styles.selectorRow, checked && styles.selectorRowActive]}
+                      style={[styles.selectorRow, checked && styles.selectorRowActive, option.disabled && styles.selectorRowDisabled]}
                       onPress={() => {
+                        if (option.disabled) {
+                          return;
+                        }
                         onChange(option.value);
                         setVisible(false);
                         setQuery('');
                       }}
+                      disabled={option.disabled}
                       activeOpacity={0.82}
                       accessibilityRole="button"
-                      accessibilityState={{ selected: checked }}
+                      accessibilityState={{ selected: checked, disabled: option.disabled }}
                     >
                       <View style={styles.selectorTextWrap}>
                         <Text style={[styles.selectorRowText, checked && styles.selectorRowTextActive]}>{option.label}</Text>
@@ -313,7 +386,7 @@ function SelectionField({ label, value, options, onChange, error, placeholder = 
   );
 }
 
-function DateField({ label, value, onChange, error }) {
+function DateField({ label, value, onChange, error, disabled = false }) {
   const [showPicker, setShowPicker] = useState(false);
   const pickerValue = value ? new Date(`${value}T00:00:00`) : new Date();
 
@@ -321,10 +394,12 @@ function DateField({ label, value, onChange, error }) {
     <View style={styles.fieldWrap}>
       <Text style={styles.label}>{label}</Text>
       <TouchableOpacity
-        style={[styles.input, styles.dateInput, error && styles.inputError]}
+        style={[styles.input, styles.dateInput, error && styles.inputError, disabled && styles.inputDisabled]}
         onPress={() => setShowPicker(true)}
+        disabled={disabled}
         activeOpacity={0.8}
         accessibilityRole="button"
+        accessibilityState={{ disabled }}
         accessibilityLabel={label}
       >
         <Text style={[styles.dateText, !value && styles.placeholderText]}>
@@ -360,31 +435,47 @@ function Section({ title, children }) {
   );
 }
 
-function ActionRow({ step, loading, onBack, onSkip, onNext, nextLabel = 'Update & Next' }) {
+function ActionRow({ step, loading, disabled = false, onBack, onSkip, onNext, nextLabel = 'Update & Next' }) {
+  const isDisabled = loading || disabled;
+
   return (
     <View style={styles.actions}>
       {(step > 0 || onSkip) && (
         <View style={styles.secondaryActionRow}>
           {step > 0 && (
-            <TouchableOpacity style={styles.secondaryButton} onPress={onBack} activeOpacity={0.8} accessibilityRole="button">
+            <TouchableOpacity
+              style={[styles.secondaryButton, isDisabled && styles.secondaryButtonDisabled]}
+              onPress={onBack}
+              disabled={isDisabled}
+              activeOpacity={0.8}
+              accessibilityRole="button"
+              accessibilityState={{ disabled: isDisabled }}
+            >
               <Ionicons name="arrow-back" size={16} color={colors.primary} />
               <Text style={styles.secondaryButtonText}>Back</Text>
             </TouchableOpacity>
           )}
           {onSkip && (
-            <TouchableOpacity style={styles.secondaryButton} onPress={onSkip} activeOpacity={0.8} accessibilityRole="button">
+            <TouchableOpacity
+              style={[styles.secondaryButton, isDisabled && styles.secondaryButtonDisabled]}
+              onPress={onSkip}
+              disabled={isDisabled}
+              activeOpacity={0.8}
+              accessibilityRole="button"
+              accessibilityState={{ disabled: isDisabled }}
+            >
               <Text style={styles.secondaryButtonText}>Skip</Text>
             </TouchableOpacity>
           )}
         </View>
       )}
       <TouchableOpacity
-        style={[styles.primaryButton, loading && styles.buttonDisabled]}
+        style={[styles.primaryButton, isDisabled && styles.buttonDisabled]}
         onPress={onNext}
-        disabled={loading}
+        disabled={isDisabled}
         activeOpacity={0.82}
         accessibilityRole="button"
-        accessibilityState={{ disabled: loading }}
+        accessibilityState={{ disabled: isDisabled }}
       >
         {loading ? (
           <ActivityIndicator color={colors.white} />
@@ -399,8 +490,34 @@ function ActionRow({ step, loading, onBack, onSkip, onNext, nextLabel = 'Update 
   );
 }
 
+function ViewNavigationRow({ step, onBack, onNext }) {
+  const canGoBack = step > 0;
+  const canGoNext = step < STEPS.length - 1;
+
+  if (!canGoBack && !canGoNext) return null;
+
+  return (
+    <View style={styles.actions}>
+      <View style={styles.secondaryActionRow}>
+        {canGoBack && (
+          <TouchableOpacity style={styles.secondaryButton} onPress={onBack} activeOpacity={0.8} accessibilityRole="button">
+            <Ionicons name="arrow-back" size={16} color={colors.primary} />
+            <Text style={styles.secondaryButtonText}>Previous</Text>
+          </TouchableOpacity>
+        )}
+        {canGoNext && (
+          <TouchableOpacity style={styles.secondaryButton} onPress={onNext} activeOpacity={0.8} accessibilityRole="button">
+            <Text style={styles.secondaryButtonText}>Next</Text>
+            <Ionicons name="arrow-forward" size={16} color={colors.primary} />
+          </TouchableOpacity>
+        )}
+      </View>
+    </View>
+  );
+}
+
 export default function EditEmployeeScreen({ navigation }) {
-  const { token } = useAuth();
+  const { token, refreshUserIdentity } = useAuth();
   const insets = useSafeAreaInsets();
   const abortRef = useRef(null);
   const scrollRef = useRef(null);
@@ -414,6 +531,7 @@ export default function EditEmployeeScreen({ navigation }) {
   const [education, setEducation] = useState([EMPTY_EDUCATION]);
   const [experience, setExperience] = useState([EMPTY_EXPERIENCE]);
   const [documents, setDocuments] = useState([]);
+  const [documentChecklist, setDocumentChecklist] = useState([]);
   const [agreements, setAgreements] = useState([]);
   const [documentType, setDocumentType] = useState('');
   const [selectedFile, setSelectedFile] = useState(null);
@@ -422,17 +540,40 @@ export default function EditEmployeeScreen({ navigation }) {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [isUploadingDocument, setIsUploadingDocument] = useState(false);
+  const [isSavingDocumentsStep, setIsSavingDocumentsStep] = useState(false);
+  const [isLoadingDocuments, setIsLoadingDocuments] = useState(false);
+  const [isLoadingChecklist, setIsLoadingChecklist] = useState(false);
+  const [documentError, setDocumentError] = useState('');
+  const [checklistError, setChecklistError] = useState('');
   const [fileAction, setFileAction] = useState('');
   const [errors, setErrors] = useState({});
   const [apiError, setApiError] = useState('');
   const [success, setSuccess] = useState('');
   const [finishSuccessVisible, setFinishSuccessVisible] = useState(false);
   const [dirty, setDirty] = useState(false);
+  const [isEditMode, setIsEditMode] = useState(false);
+  const [completedStepIndexes, setCompletedStepIndexes] = useState([]);
+  const uploadLockRef = useRef(false);
+  const mountedRef = useRef(true);
 
-  const groupedDocumentOptions = useMemo(
-    () => DOCUMENT_GROUPS.flatMap((group) => group.options.map((option) => ({ label: option, value: option, group: group.label }))),
-    []
+  const documentTypeOptions = useMemo(() => {
+    return documentChecklist.map((item) => ({
+      label: `${getFriendlyDocumentLabel(item.documentType)}${item.uploaded ? ' - Uploaded' : ''}`,
+      value: item.documentType,
+      helper: item.uploaded
+        ? `Status: ${getDocumentStatusText(item.status, item.uploaded)}`
+        : 'Upload required',
+      disabled: item.uploaded,
+    }));
+  }, [documentChecklist]);
+  const uploadedDocumentCount = useMemo(
+    () => documentChecklist.filter((item) => item.uploaded).length,
+    [documentChecklist]
   );
+  const totalDocumentCount = documentChecklist.length;
+  const remainingDocumentCount = Math.max(totalDocumentCount - uploadedDocumentCount, 0);
+  const documentProgress = totalDocumentCount ? uploadedDocumentCount / totalDocumentCount : 0;
   const agreementOptions = useMemo(
     () => agreements.map((item) => ({
       label: item.agreementName || item.agreementType || `Agreement ${item.id}`,
@@ -441,14 +582,23 @@ export default function EditEmployeeScreen({ navigation }) {
     })),
     [agreements]
   );
-  const selectedDocumentCategory = useMemo(() => {
-    const match = DOCUMENT_GROUPS.find((group) => group.options.includes(documentType));
-    return match?.label || 'Documents';
-  }, [documentType]);
+  const markStepCompleted = useCallback((stepIndex) => {
+    setCompletedStepIndexes((current) => (
+      current.includes(stepIndex) ? current : [...current, stepIndex]
+    ));
+  }, []);
+
+  const clearCompletedSteps = useCallback(() => {
+    setCompletedStepIndexes([]);
+  }, []);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ y: 0, animated: true });
   }, [step]);
+
+  useEffect(() => () => {
+    mountedRef.current = false;
+  }, []);
 
   useEffect(() => {
     if (!success) return undefined;
@@ -456,7 +606,7 @@ export default function EditEmployeeScreen({ navigation }) {
     return () => clearTimeout(timer);
   }, [success]);
 
-  usePreventRemove(dirty, ({ data }) => {
+  usePreventRemove(isEditMode && dirty, ({ data }) => {
     Alert.alert('Discard unsaved changes?', 'Your current step has unsaved changes.', [
       { text: 'Keep Editing', style: 'cancel' },
       {
@@ -524,7 +674,7 @@ export default function EditEmployeeScreen({ navigation }) {
           setDocuments(normalizeDocuments(documentResult.value));
         }
         if (checklistResult.status === 'fulfilled') {
-          // Loaded for backend freshness; document list remains the display source.
+          setDocumentChecklist(normalizeDocumentChecklist(checklistResult.value));
         }
         if (agreementsResult.status === 'fulfilled') {
           setAgreements(normalizeAgreements(agreementsResult.value));
@@ -545,28 +695,134 @@ export default function EditEmployeeScreen({ navigation }) {
     }
   }, [applyProfile, token]);
 
+  const refreshDocuments = useCallback(async ({ quiet = false } = {}) => {
+    if (!employeeId || !token) {
+      return { documents: [], checklist: [] };
+    }
+
+    if (!quiet) {
+      setIsLoadingDocuments(true);
+      setIsLoadingChecklist(true);
+    }
+    setDocumentError('');
+    setChecklistError('');
+
+    try {
+      const [documentsResult, checklistResult] = await Promise.allSettled([
+        getEmployeeDocuments(employeeId, token),
+        getDocumentChecklist(employeeId, token),
+      ]);
+
+      let nextDocuments = documents;
+      let nextChecklist = documentChecklist;
+
+      if (documentsResult.status === 'fulfilled') {
+        nextDocuments = normalizeDocuments(documentsResult.value);
+        if (mountedRef.current) {
+          setDocuments(nextDocuments);
+        }
+      } else if (mountedRef.current) {
+        setDocumentError(documentsResult.reason?.message || 'Unable to refresh uploaded documents.');
+      }
+
+      if (checklistResult.status === 'fulfilled') {
+        nextChecklist = normalizeDocumentChecklist(checklistResult.value);
+        if (mountedRef.current) {
+          setDocumentChecklist(nextChecklist);
+        }
+      } else if (mountedRef.current) {
+        setChecklistError(checklistResult.reason?.message || 'Unable to load document checklist.');
+      }
+
+      if (documentsResult.status !== 'fulfilled' || checklistResult.status !== 'fulfilled') {
+        throw new Error('Unable to refresh document details.');
+      }
+
+      return {
+        documents: nextDocuments,
+        checklist: nextChecklist,
+      };
+    } finally {
+      if (mountedRef.current && !quiet) {
+        setIsLoadingDocuments(false);
+        setIsLoadingChecklist(false);
+      }
+    }
+  }, [documentChecklist, documents, employeeId, token]);
+
   useEffect(() => {
     loadAll();
     return () => abortRef.current?.abort();
   }, [loadAll]);
 
+  useEffect(() => {
+    if (step === 4 && activeDocumentTab === 'documents' && employeeId && token) {
+      refreshDocuments({ quiet: true }).catch(() => {});
+    }
+    // Intentionally tied to the visible Documents tab, not every refreshDocuments state change.
+  }, [activeDocumentTab, employeeId, step, token]);
+
+  const handleRefresh = useCallback(() => {
+    if (isEditMode && dirty) {
+      Alert.alert('Unsaved changes', 'Save or discard your changes before refreshing employee details.');
+      return;
+    }
+    loadAll({ refresh: true });
+  }, [dirty, isEditMode, loadAll]);
+
+  const enterEditMode = useCallback(() => {
+    setErrors({});
+    setApiError('');
+    setSuccess('');
+    clearCompletedSteps();
+    setIsEditMode(true);
+  }, [clearCompletedSteps]);
+
+  const exitEditMode = useCallback(() => {
+    const finishExit = () => {
+      setErrors({});
+      setApiError('');
+      setSuccess('');
+      setDirty(false);
+      setDocumentType('');
+      setSelectedFile(null);
+      setAgreementForm({ agreementId: '', signatureName: '', signedLocation: '', signatureFile: null });
+      clearCompletedSteps();
+      setIsEditMode(false);
+      loadAll({ refresh: true });
+    };
+
+    if (!dirty) {
+      finishExit();
+      return;
+    }
+
+    Alert.alert('Discard unsaved changes?', 'Your current step has unsaved changes.', [
+      { text: 'Keep Editing', style: 'cancel' },
+      { text: 'Discard', style: 'destructive', onPress: finishExit },
+    ]);
+  }, [clearCompletedSteps, dirty, loadAll]);
+
   const updatePersonal = (key, value) => {
+    if (!isEditMode) return;
     setPersonal((current) => ({ ...current, [key]: value }));
     setDirty(true);
   };
 
   const updateBank = (key, value) => {
+    if (!isEditMode) return;
     setBank((current) => ({ ...current, [key]: value }));
     setDirty(true);
   };
 
   const updateList = (setter, index, key, value) => {
+    if (!isEditMode) return;
     setter((current) => current.map((item, itemIndex) => (itemIndex === index ? { ...item, [key]: value } : item)));
     setDirty(true);
   };
 
   const goToStep = (targetStep) => {
-    if (dirty) {
+    if (isEditMode && dirty) {
       Alert.alert('Discard unsaved changes?', 'Your current step has unsaved changes.', [
         { text: 'Keep Editing', style: 'cancel' },
         {
@@ -585,10 +841,11 @@ export default function EditEmployeeScreen({ navigation }) {
     setStep(targetStep);
   };
 
-  const afterSave = async (nextStep, message) => {
+  const afterSave = async ({ completedStep, nextStep, message }) => {
     await loadAll({ refresh: true });
     setDirty(false);
     setSuccess(message);
+    markStepCompleted(completedStep);
     setMaxStep((current) => Math.max(current, nextStep));
     setStep(nextStep);
   };
@@ -673,6 +930,7 @@ export default function EditEmployeeScreen({ navigation }) {
   };
 
   const savePersonal = async () => {
+    if (!isEditMode) return;
     const next = validatePersonal();
     if (Object.keys(next).length) return Alert.alert('Validation', firstError(next));
     setSaving(true);
@@ -681,7 +939,11 @@ export default function EditEmployeeScreen({ navigation }) {
       const payload = buildPersonalPayload(personal);
       await savePersonalInfo(payload, personal.employeeId, profile?.hasPersonal, token);
       setEmployeeId(personal.employeeId);
-      await afterSave(1, 'Personal information updated.');
+      await afterSave({
+        completedStep: 0,
+        nextStep: 1,
+        message: 'Personal information updated.',
+      });
     } catch (error) {
       setApiError(error?.message || 'Unable to update personal information.');
     } finally {
@@ -690,6 +952,7 @@ export default function EditEmployeeScreen({ navigation }) {
   };
 
   const saveBank = async ({ skip = false } = {}) => {
+    if (!isEditMode) return;
     if (skip) return goToStep(2);
     const next = validateBank();
     if (Object.keys(next).length) return Alert.alert('Validation', firstError(next));
@@ -697,7 +960,11 @@ export default function EditEmployeeScreen({ navigation }) {
     setApiError('');
     try {
       await saveBankInfo(buildBankPayload(bank, employeeId), employeeId, profile?.hasBank, token);
-      await afterSave(2, 'Bank information updated.');
+      await afterSave({
+        completedStep: 1,
+        nextStep: 2,
+        message: 'Bank information updated.',
+      });
     } catch (error) {
       setApiError(error?.message || 'Unable to update bank information.');
     } finally {
@@ -706,13 +973,18 @@ export default function EditEmployeeScreen({ navigation }) {
   };
 
   const saveEducation = async () => {
+    if (!isEditMode) return;
     const next = validateEducation();
     if (Object.keys(next).length) return Alert.alert('Validation', 'Please complete or remove highlighted education entries.');
     setSaving(true);
     setApiError('');
     try {
       await saveEducationCollection(educationPayload(education, employeeId), employeeId, profile?.hasEducation, token);
-      await afterSave(3, 'Education information updated.');
+      await afterSave({
+        completedStep: 2,
+        nextStep: 3,
+        message: 'Education information updated.',
+      });
     } catch (error) {
       setApiError(error?.message || 'Unable to update education information.');
     } finally {
@@ -721,6 +993,7 @@ export default function EditEmployeeScreen({ navigation }) {
   };
 
   const saveExperience = async ({ skip = false } = {}) => {
+    if (!isEditMode) return;
     if (skip) return goToStep(4);
     const next = validateExperience();
     if (Object.keys(next).length) return Alert.alert('Validation', 'Please complete or remove highlighted experience entries.');
@@ -728,7 +1001,11 @@ export default function EditEmployeeScreen({ navigation }) {
     setApiError('');
     try {
       await saveExperienceCollection(experiencePayload(experience, employeeId), employeeId, profile?.hasExperience, token);
-      await afterSave(4, 'Experience information updated.');
+      await afterSave({
+        completedStep: 3,
+        nextStep: 4,
+        message: 'Experience information updated.',
+      });
     } catch (error) {
       setApiError(error?.message || 'Unable to update experience information.');
     } finally {
@@ -737,6 +1014,7 @@ export default function EditEmployeeScreen({ navigation }) {
   };
 
   const chooseFile = async ({ signature = false } = {}) => {
+    if (!isEditMode) return;
     const result = await DocumentPicker.getDocumentAsync({
       multiple: false,
       copyToCacheDirectory: true,
@@ -750,8 +1028,12 @@ export default function EditEmployeeScreen({ navigation }) {
       Alert.alert('File too large', signature ? 'Signature image must be 10 MB or less.' : 'Document must be 3 MB or less.');
       return;
     }
-    if (file.mimeType && !SUPPORTED_FILE_TYPES.includes(file.mimeType)) {
+    if (!signature && !isSupportedDocumentFile(file)) {
       Alert.alert('Unsupported file', 'Please select a PDF, JPG, JPEG, or PNG file.');
+      return;
+    }
+    if (signature && file.mimeType && !['image/png', 'image/jpeg', 'image/jpg'].includes(file.mimeType)) {
+      Alert.alert('Unsupported file', 'Please select a PNG or JPG signature image.');
       return;
     }
     if (signature) {
@@ -762,25 +1044,83 @@ export default function EditEmployeeScreen({ navigation }) {
     setDirty(true);
   };
 
+  const refreshAndVerifyDocuments = useCallback(async (uploadedDocumentType) => {
+    const uploadedTypeKey = normalizeDocumentType(uploadedDocumentType);
+    const attempts = [0, 500, 1000];
+
+    for (const waitMs of attempts) {
+      if (waitMs) {
+        await delay(waitMs);
+      }
+
+      let refreshed = null;
+      try {
+        refreshed = await refreshDocuments({ quiet: true });
+      } catch {
+        refreshed = null;
+      }
+
+      const uploadConfirmed = Boolean(refreshed) && (
+        refreshed.documents.some((document) =>
+          normalizeDocumentType(document.documentType) === uploadedTypeKey
+        ) || refreshed.checklist.some((item) =>
+          normalizeDocumentType(item.documentType) === uploadedTypeKey && item.uploaded
+        )
+      );
+
+      if (uploadConfirmed) {
+        return true;
+      }
+    }
+
+    return false;
+  }, [refreshDocuments]);
+
   const uploadDocument = async () => {
-    if (!employeeId) return Alert.alert('Employee ID missing', 'Load your profile before uploading documents.');
+    if (!isEditMode) return;
+    if (uploadLockRef.current || isUploadingDocument) return;
+    if (!employeeId) return Alert.alert('Employee ID missing', 'Employee ID is unavailable. Refresh your profile and try again.');
     if (!documentType) return Alert.alert('Document type required', 'Select a document type.');
     if (!selectedFile) return Alert.alert('File required', 'Select a document file.');
-    if (documents.some((item) => item.documentType.toLowerCase() === documentType.toLowerCase())) {
+    if (!isSupportedDocumentFile(selectedFile)) return Alert.alert('Unsupported file', 'Please select a PDF, JPG, JPEG, or PNG file.');
+    if (selectedFile.size && selectedFile.size > MAX_DOCUMENT_SIZE) return Alert.alert('File too large', 'Document must be 3 MB or less.');
+
+    const selectedTypeKey = normalizeDocumentType(documentType);
+    if (
+      documentChecklist.some((item) => normalizeDocumentType(item.documentType) === selectedTypeKey && item.uploaded) ||
+      documents.some((item) => normalizeDocumentType(item.documentType) === selectedTypeKey)
+    ) {
+      refreshDocuments({ quiet: true }).catch(() => {});
       return Alert.alert('Duplicate document', 'This document type is already uploaded.');
     }
-    setSaving(true);
+
+    uploadLockRef.current = true;
+    setIsUploadingDocument(true);
+    setDocumentError('');
+    setChecklistError('');
     try {
-      await uploadEmployeeDocument({ employeeId, documentType, category: selectedDocumentCategory, file: selectedFile }, token);
+      await uploadEmployeeDocument({ employeeId, documentType, file: selectedFile }, token);
+      const verified = await refreshAndVerifyDocuments(documentType);
+
+      if (!verified) {
+        throw new Error('The document upload was accepted, but the document list could not be refreshed. Pull down to verify the upload before trying again.');
+      }
+
       setDocumentType('');
       setSelectedFile(null);
-      await loadAll({ refresh: true });
-      setSuccess('Document uploaded.');
-    } catch (error) {
-      setApiError(error?.message || 'Unable to upload document.');
-    } finally {
-      setSaving(false);
+      markStepCompleted(4);
       setDirty(false);
+      setSuccess('Document uploaded successfully.');
+      Alert.alert('Document Uploaded', 'Your document was uploaded successfully.');
+    } catch (error) {
+      const message = error?.message || 'Unable to upload document.';
+      if (message.toLowerCase().includes('already uploaded')) {
+        refreshDocuments({ quiet: true }).catch(() => {});
+      }
+      setDocumentError(message);
+    } finally {
+      uploadLockRef.current = false;
+      setIsUploadingDocument(false);
     }
   };
 
@@ -823,7 +1163,8 @@ export default function EditEmployeeScreen({ navigation }) {
   };
 
   const confirmDeleteDocument = (document) => {
-    Alert.alert('Delete document', `Delete ${document.documentType}?`, [
+    if (!isEditMode) return;
+    Alert.alert(`Delete ${getFriendlyDocumentLabel(document.documentType)}?`, 'This removes the uploaded document. You can upload another file afterward.', [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Delete',
@@ -832,7 +1173,12 @@ export default function EditEmployeeScreen({ navigation }) {
           setFileAction(`delete-${document.id}`);
           try {
             await deleteEmployeeDocument(document.id, token);
-            await loadAll({ refresh: true });
+            const refreshed = await refreshDocuments({ quiet: true });
+            const deleted = !refreshed.documents.some((item) => String(item.id) === String(document.id));
+            if (!deleted) {
+              throw new Error('The document could not be confirmed as deleted. Please refresh and try again.');
+            }
+            markStepCompleted(4);
           } catch (error) {
             Alert.alert('Delete failed', error?.message || 'Unable to delete document.');
           } finally {
@@ -866,6 +1212,7 @@ export default function EditEmployeeScreen({ navigation }) {
   };
 
   const submitAgreement = async () => {
+    if (!isEditMode) return;
     const agreement = agreements.find((item) => item.id === agreementForm.agreementId);
     if (!agreement) return Alert.alert('Agreement required', 'Select an agreement.');
     if (!agreementForm.signatureName.trim()) return Alert.alert('Signature name required', 'Enter your signature name.');
@@ -882,6 +1229,7 @@ export default function EditEmployeeScreen({ navigation }) {
       }, token);
       setAgreementForm({ agreementId: '', signatureName: '', signedLocation: '', signatureFile: null });
       await loadAll({ refresh: true });
+      markStepCompleted(4);
       setSuccess('Agreement signed successfully.');
     } catch (error) {
       setApiError(error?.message || 'Unable to sign agreement.');
@@ -891,15 +1239,39 @@ export default function EditEmployeeScreen({ navigation }) {
     }
   };
 
+  const continueFromDocuments = async () => {
+    if (isUploadingDocument || isSavingDocumentsStep) return;
+    if (selectedFile || documentType) {
+      Alert.alert(
+        'Upload pending',
+        'You selected a file but have not uploaded it yet. Upload it or remove the selection before continuing.'
+      );
+      return;
+    }
+
+    setIsSavingDocumentsStep(true);
+    try {
+      setDirty(false);
+      setMaxStep((current) => Math.max(current, 5));
+      setStep(5);
+    } finally {
+      setIsSavingDocumentsStep(false);
+    }
+  };
+
   const finishReview = async () => {
+    if (!isEditMode) return;
     if (saving) return;
     setSaving(true);
     setApiError('');
     try {
       const latestProfile = normalizeEmployeeProfile(await getMyEmployeeDetails(token));
       applyProfile(latestProfile);
+      await refreshUserIdentity?.();
       setDirty(false);
       setSuccess('');
+      setIsEditMode(false);
+      clearCompletedSteps();
       setStep(0);
       setMaxStep((current) => Math.max(current, 5));
       setFinishSuccessVisible(true);
@@ -912,54 +1284,86 @@ export default function EditEmployeeScreen({ navigation }) {
     }
   };
 
+  const ReadOnlyField = useCallback(({ editable = true, ...props }) => (
+    <Field {...props} editable={isEditMode && editable} />
+  ), [isEditMode]);
+
+  const ReadOnlyOptionField = useCallback((props) => (
+    <OptionField {...props} disabled={!isEditMode} />
+  ), [isEditMode]);
+
+  const ReadOnlySelectionField = useCallback(({ disabled = false, ...props }) => (
+    <SelectionField {...props} disabled={!isEditMode || disabled} />
+  ), [isEditMode]);
+
+  const ReadOnlyDateField = useCallback((props) => (
+    <DateField {...props} disabled={!isEditMode} />
+  ), [isEditMode]);
+
+  const StepActions = useCallback(({ onBack, onSkip, onNext, nextLabel, loading = saving, disabled = false }) => (
+    isEditMode ? (
+      <ActionRow
+        step={step}
+        loading={loading}
+        disabled={disabled}
+        onBack={onBack}
+        onSkip={onSkip}
+        onNext={onNext}
+        nextLabel={nextLabel}
+      />
+    ) : (
+      <ViewNavigationRow step={step} onBack={() => goToStep(step - 1)} onNext={() => goToStep(step + 1)} />
+    )
+  ), [goToStep, isEditMode, saving, step]);
+
   const renderPersonal = () => (
     <>
       <Section title="Personal Information">
-        <Field label="Employee ID" value={personal.employeeId} onChangeText={(value) => updatePersonal('employeeId', value)} error={errors.employeeId} editable={!employeeId} autoCapitalize="characters" />
-        <Field label="First Name" value={personal.firstName} onChangeText={(value) => updatePersonal('firstName', value)} error={errors.firstName} />
-        <Field label="Middle Name" value={personal.middleName} onChangeText={(value) => updatePersonal('middleName', value)} />
-        <Field label="Last Name" value={personal.lastName} onChangeText={(value) => updatePersonal('lastName', value)} error={errors.lastName} />
-        <OptionField label="Gender" value={personal.gender} options={GENDER_OPTIONS} onChange={(value) => updatePersonal('gender', value)} error={errors.gender} />
-        <OptionField label="Marital Status" value={personal.maritalStatus} options={MARITAL_OPTIONS} onChange={(value) => updatePersonal('maritalStatus', value)} error={errors.maritalStatus} />
-        <DateField label="Date of Birth" value={personal.dob} onChange={(value) => updatePersonal('dob', value)} error={errors.dob} />
-        <Field label="Phone Number" value={personal.phone} onChangeText={(value) => updatePersonal('phone', value.replace(/[^\d]/g, '').slice(0, 10))} error={errors.phone} keyboardType="phone-pad" />
-        <Field label="Email" value={personal.email} onChangeText={(value) => updatePersonal('email', value)} error={errors.email} keyboardType="email-address" autoCapitalize="none" />
-        <Field label="Aadhaar Number" value={personal.aadhaar} onChangeText={(value) => updatePersonal('aadhaar', value.replace(/[^\d]/g, '').slice(0, 12))} error={errors.aadhaar} keyboardType="number-pad" />
-        <Field label="PAN Number" value={personal.pan} onChangeText={(value) => updatePersonal('pan', value.toUpperCase().slice(0, 10))} error={errors.pan} autoCapitalize="characters" />
-        <OptionField label="Blood Group" value={personal.bloodGroup} options={BLOOD_GROUP_OPTIONS} onChange={(value) => updatePersonal('bloodGroup', value)} error={errors.bloodGroup} />
+        <ReadOnlyField label="Employee ID" value={personal.employeeId} onChangeText={(value) => updatePersonal('employeeId', value)} error={errors.employeeId} editable={!employeeId} autoCapitalize="characters" />
+        <ReadOnlyField label="First Name" value={personal.firstName} onChangeText={(value) => updatePersonal('firstName', value)} error={errors.firstName} />
+        <ReadOnlyField label="Middle Name" value={personal.middleName} onChangeText={(value) => updatePersonal('middleName', value)} />
+        <ReadOnlyField label="Last Name" value={personal.lastName} onChangeText={(value) => updatePersonal('lastName', value)} error={errors.lastName} />
+        <ReadOnlyOptionField label="Gender" value={personal.gender} options={GENDER_OPTIONS} onChange={(value) => updatePersonal('gender', value)} error={errors.gender} />
+        <ReadOnlyOptionField label="Marital Status" value={personal.maritalStatus} options={MARITAL_OPTIONS} onChange={(value) => updatePersonal('maritalStatus', value)} error={errors.maritalStatus} />
+        <ReadOnlyDateField label="Date of Birth" value={personal.dob} onChange={(value) => updatePersonal('dob', value)} error={errors.dob} />
+        <ReadOnlyField label="Phone Number" value={personal.phone} onChangeText={(value) => updatePersonal('phone', value.replace(/[^\d]/g, '').slice(0, 10))} error={errors.phone} keyboardType="phone-pad" />
+        <ReadOnlyField label="Email" value={personal.email} onChangeText={(value) => updatePersonal('email', value)} error={errors.email} keyboardType="email-address" autoCapitalize="none" />
+        <ReadOnlyField label="Aadhaar Number" value={personal.aadhaar} onChangeText={(value) => updatePersonal('aadhaar', value.replace(/[^\d]/g, '').slice(0, 12))} error={errors.aadhaar} keyboardType="number-pad" />
+        <ReadOnlyField label="PAN Number" value={personal.pan} onChangeText={(value) => updatePersonal('pan', value.toUpperCase().slice(0, 10))} error={errors.pan} autoCapitalize="characters" />
+        <ReadOnlyOptionField label="Blood Group" value={personal.bloodGroup} options={BLOOD_GROUP_OPTIONS} onChange={(value) => updatePersonal('bloodGroup', value)} error={errors.bloodGroup} />
       </Section>
       <Section title="Employment Information">
-        <SelectionField label="Department" value={personal.department} options={departments.length ? departments : [personal.department].filter(Boolean)} onChange={(value) => updatePersonal('department', value)} error={errors.department} placeholder="Select department" />
-        <SelectionField label="Designation" value={personal.designation} options={DESIGNATION_OPTIONS} onChange={(value) => updatePersonal('designation', value)} error={errors.designation} placeholder="Select designation" />
-        <DateField label="Date of Joining" value={personal.joiningDate} onChange={(value) => updatePersonal('joiningDate', value)} error={errors.joiningDate} />
+        <ReadOnlySelectionField label="Department" value={personal.department} options={departments.length ? departments : [personal.department].filter(Boolean)} onChange={(value) => updatePersonal('department', value)} error={errors.department} placeholder="Select department" />
+        <ReadOnlySelectionField label="Designation" value={personal.designation} options={DESIGNATION_OPTIONS} onChange={(value) => updatePersonal('designation', value)} error={errors.designation} placeholder="Select designation" />
+        <ReadOnlyDateField label="Date of Joining" value={personal.joiningDate} onChange={(value) => updatePersonal('joiningDate', value)} error={errors.joiningDate} />
       </Section>
       <Section title="Address Information">
-        <Field label="House Number" value={personal.houseNo} onChangeText={(value) => updatePersonal('houseNo', value)} error={errors.houseNo} />
-        <Field label="Street / Area" value={personal.street} onChangeText={(value) => updatePersonal('street', value)} error={errors.street} />
-        <Field label="City / Village" value={personal.city} onChangeText={(value) => updatePersonal('city', value)} error={errors.city} />
-        <Field label="District" value={personal.district} onChangeText={(value) => updatePersonal('district', value)} error={errors.district} />
-        <Field label="State" value={personal.state} onChangeText={(value) => updatePersonal('state', value)} error={errors.state} />
-        <Field label="Country" value={personal.country} onChangeText={(value) => updatePersonal('country', value)} error={errors.country} />
-        <Field label="Pincode" value={personal.pincode} onChangeText={(value) => updatePersonal('pincode', value.replace(/[^\d]/g, '').slice(0, 6))} error={errors.pincode} keyboardType="number-pad" />
+        <ReadOnlyField label="House Number" value={personal.houseNo} onChangeText={(value) => updatePersonal('houseNo', value)} error={errors.houseNo} />
+        <ReadOnlyField label="Street / Area" value={personal.street} onChangeText={(value) => updatePersonal('street', value)} error={errors.street} />
+        <ReadOnlyField label="City / Village" value={personal.city} onChangeText={(value) => updatePersonal('city', value)} error={errors.city} />
+        <ReadOnlyField label="District" value={personal.district} onChangeText={(value) => updatePersonal('district', value)} error={errors.district} />
+        <ReadOnlyField label="State" value={personal.state} onChangeText={(value) => updatePersonal('state', value)} error={errors.state} />
+        <ReadOnlyField label="Country" value={personal.country} onChangeText={(value) => updatePersonal('country', value)} error={errors.country} />
+        <ReadOnlyField label="Pincode" value={personal.pincode} onChangeText={(value) => updatePersonal('pincode', value.replace(/[^\d]/g, '').slice(0, 6))} error={errors.pincode} keyboardType="number-pad" />
       </Section>
-      <ActionRow step={step} loading={saving} onBack={() => goToStep(step - 1)} onNext={savePersonal} />
+      <StepActions onBack={() => goToStep(step - 1)} onNext={savePersonal} />
     </>
   );
 
   const renderBank = () => (
     <>
       <Section title="Bank Information">
-        <Field label="Customer ID" value={bank.customerId} onChangeText={(value) => updateBank('customerId', value)} />
-        <SelectionField label="Bank Name" value={bank.bankName} options={BANK_OPTIONS} onChange={(value) => updateBank('bankName', value)} error={errors.bankName} placeholder="Select bank" />
-        {bank.bankName === 'Others' && <Field label="Enter Bank Name" value={bank.manualBank} onChangeText={(value) => updateBank('manualBank', value)} error={errors.bankName} />}
-        <Field label="Account Holder Name" value={bank.accountHolder} onChangeText={(value) => updateBank('accountHolder', value)} error={errors.accountHolder} />
-        <Field label="Account Number" value={bank.accountNumber} onChangeText={(value) => updateBank('accountNumber', value.replace(/[^\d]/g, ''))} error={errors.accountNumber} keyboardType="number-pad" />
-        <Field label="IFSC Code" value={bank.ifsc} onChangeText={(value) => updateBank('ifsc', value.toUpperCase().slice(0, 11))} error={errors.ifsc} autoCapitalize="characters" />
-        <Field label="Branch Name" value={bank.branch} onChangeText={(value) => updateBank('branch', value)} error={errors.branch} />
-        <Field label="UAN Number" value={bank.uan} onChangeText={(value) => updateBank('uan', value)} />
-        <Field label="PF Account Number" value={bank.pf} onChangeText={(value) => updateBank('pf', value)} />
+        <ReadOnlyField label="Customer ID" value={bank.customerId} onChangeText={(value) => updateBank('customerId', value)} />
+        <ReadOnlySelectionField label="Bank Name" value={bank.bankName} options={BANK_OPTIONS} onChange={(value) => updateBank('bankName', value)} error={errors.bankName} placeholder="Select bank" />
+        {bank.bankName === 'Others' && <ReadOnlyField label="Enter Bank Name" value={bank.manualBank} onChangeText={(value) => updateBank('manualBank', value)} error={errors.bankName} />}
+        <ReadOnlyField label="Account Holder Name" value={bank.accountHolder} onChangeText={(value) => updateBank('accountHolder', value)} error={errors.accountHolder} />
+        <ReadOnlyField label="Account Number" value={bank.accountNumber} onChangeText={(value) => updateBank('accountNumber', value.replace(/[^\d]/g, ''))} error={errors.accountNumber} keyboardType="number-pad" />
+        <ReadOnlyField label="IFSC Code" value={bank.ifsc} onChangeText={(value) => updateBank('ifsc', value.toUpperCase().slice(0, 11))} error={errors.ifsc} autoCapitalize="characters" />
+        <ReadOnlyField label="Branch Name" value={bank.branch} onChangeText={(value) => updateBank('branch', value)} error={errors.branch} />
+        <ReadOnlyField label="UAN Number" value={bank.uan} onChangeText={(value) => updateBank('uan', value)} />
+        <ReadOnlyField label="PF Account Number" value={bank.pf} onChangeText={(value) => updateBank('pf', value)} />
       </Section>
-      <ActionRow step={step} loading={saving} onBack={() => goToStep(step - 1)} onSkip={() => saveBank({ skip: true })} onNext={() => saveBank()} />
+      <StepActions onBack={() => goToStep(step - 1)} onSkip={() => saveBank({ skip: true })} onNext={() => saveBank()} />
     </>
   );
 
@@ -969,25 +1373,25 @@ export default function EditEmployeeScreen({ navigation }) {
         const rowErrors = errors[`education-${index}`] || {};
         return (
           <Section key={`education-${index}`} title={`Education ${index + 1}`}>
-            <SelectionField label="Qualification" value={item.qualification} options={QUALIFICATION_OPTIONS} onChange={(value) => updateList(setEducation, index, 'qualification', value)} error={rowErrors.qualification} placeholder="Select qualification" />
-            {item.qualification === 'Other' && <Field label="Custom Qualification" value={item.customQualification} onChangeText={(value) => updateList(setEducation, index, 'customQualification', value)} error={rowErrors.qualification} />}
-            <Field label="University / Board" value={item.university} onChangeText={(value) => updateList(setEducation, index, 'university', value)} error={rowErrors.university} />
-            <Field label="Year of Passing" value={item.year} onChangeText={(value) => updateList(setEducation, index, 'year', value.replace(/[^\d]/g, '').slice(0, 4))} error={rowErrors.year} keyboardType="number-pad" />
-            <Field label="Percentage / CGPA" value={item.percentage} onChangeText={(value) => updateList(setEducation, index, 'percentage', value)} error={rowErrors.percentage} keyboardType="decimal-pad" />
-            <Field label="Specialization" value={item.specialization} onChangeText={(value) => updateList(setEducation, index, 'specialization', value)} error={rowErrors.specialization} />
+            <ReadOnlySelectionField label="Qualification" value={item.qualification} options={QUALIFICATION_OPTIONS} onChange={(value) => updateList(setEducation, index, 'qualification', value)} error={rowErrors.qualification} placeholder="Select qualification" />
+            {item.qualification === 'Other' && <ReadOnlyField label="Custom Qualification" value={item.customQualification} onChangeText={(value) => updateList(setEducation, index, 'customQualification', value)} error={rowErrors.qualification} />}
+            <ReadOnlyField label="University / Board" value={item.university} onChangeText={(value) => updateList(setEducation, index, 'university', value)} error={rowErrors.university} />
+            <ReadOnlyField label="Year of Passing" value={item.year} onChangeText={(value) => updateList(setEducation, index, 'year', value.replace(/[^\d]/g, '').slice(0, 4))} error={rowErrors.year} keyboardType="number-pad" />
+            <ReadOnlyField label="Percentage / CGPA" value={item.percentage} onChangeText={(value) => updateList(setEducation, index, 'percentage', value)} error={rowErrors.percentage} keyboardType="decimal-pad" />
+            <ReadOnlyField label="Specialization" value={item.specialization} onChangeText={(value) => updateList(setEducation, index, 'specialization', value)} error={rowErrors.specialization} />
             {!!rowErrors.duplicate && <Text style={styles.errorText}>{rowErrors.duplicate}</Text>}
-            <TouchableOpacity style={styles.removeButton} onPress={() => { setEducation((current) => current.filter((_, i) => i !== index)); setDirty(true); }} accessibilityRole="button">
+            {isEditMode && <TouchableOpacity style={styles.removeButton} onPress={() => { setEducation((current) => current.filter((_, i) => i !== index)); setDirty(true); }} accessibilityRole="button">
               <Ionicons name="trash-outline" size={18} color={colors.employeeEdit.removeText} />
               <Text style={styles.removeText}>Remove</Text>
-            </TouchableOpacity>
+            </TouchableOpacity>}
           </Section>
         );
       })}
-      <TouchableOpacity style={styles.addButton} onPress={() => { setEducation((current) => [...current, { ...EMPTY_EDUCATION }]); setDirty(true); }} accessibilityRole="button">
+      {isEditMode && <TouchableOpacity style={styles.addButton} onPress={() => { setEducation((current) => [...current, { ...EMPTY_EDUCATION }]); setDirty(true); }} accessibilityRole="button">
         <Ionicons name="add" size={20} color={colors.primary} />
         <Text style={styles.addText}>Add Another Education</Text>
-      </TouchableOpacity>
-      <ActionRow step={step} loading={saving} onBack={() => goToStep(step - 1)} onNext={saveEducation} />
+      </TouchableOpacity>}
+      <StepActions onBack={() => goToStep(step - 1)} onNext={saveEducation} />
     </>
   );
 
@@ -997,25 +1401,25 @@ export default function EditEmployeeScreen({ navigation }) {
         const rowErrors = errors[`experience-${index}`] || {};
         return (
           <Section key={`experience-${index}`} title={`Experience ${index + 1}`}>
-            <Field label="Company Name" value={item.company} onChangeText={(value) => updateList(setExperience, index, 'company', value)} error={rowErrors.company} />
-            <Field label="Designation" value={item.designation} onChangeText={(value) => updateList(setExperience, index, 'designation', value)} error={rowErrors.designation} />
-            <DateField label="From Date" value={item.fromDate} onChange={(value) => updateList(setExperience, index, 'fromDate', value)} error={rowErrors.fromDate} />
-            <DateField label="To Date" value={item.toDate} onChange={(value) => updateList(setExperience, index, 'toDate', value)} error={rowErrors.toDate} />
-            <Field label="Years of Experience" value={String(experienceYears(item.fromDate, item.toDate))} editable={false} />
-            <Field label="Reason for Leaving" value={item.reason} onChangeText={(value) => updateList(setExperience, index, 'reason', value)} error={rowErrors.reason} />
-            <Field label="Description" value={item.description} onChangeText={(value) => updateList(setExperience, index, 'description', value)} error={rowErrors.description} multiline />
-            <TouchableOpacity style={styles.removeButton} onPress={() => { setExperience((current) => current.filter((_, i) => i !== index)); setDirty(true); }} accessibilityRole="button">
+            <ReadOnlyField label="Company Name" value={item.company} onChangeText={(value) => updateList(setExperience, index, 'company', value)} error={rowErrors.company} />
+            <ReadOnlyField label="Designation" value={item.designation} onChangeText={(value) => updateList(setExperience, index, 'designation', value)} error={rowErrors.designation} />
+            <ReadOnlyDateField label="From Date" value={item.fromDate} onChange={(value) => updateList(setExperience, index, 'fromDate', value)} error={rowErrors.fromDate} />
+            <ReadOnlyDateField label="To Date" value={item.toDate} onChange={(value) => updateList(setExperience, index, 'toDate', value)} error={rowErrors.toDate} />
+            <ReadOnlyField label="Years of Experience" value={String(experienceYears(item.fromDate, item.toDate))} editable={false} />
+            <ReadOnlyField label="Reason for Leaving" value={item.reason} onChangeText={(value) => updateList(setExperience, index, 'reason', value)} error={rowErrors.reason} />
+            <ReadOnlyField label="Description" value={item.description} onChangeText={(value) => updateList(setExperience, index, 'description', value)} error={rowErrors.description} multiline />
+            {isEditMode && <TouchableOpacity style={styles.removeButton} onPress={() => { setExperience((current) => current.filter((_, i) => i !== index)); setDirty(true); }} accessibilityRole="button">
               <Ionicons name="trash-outline" size={18} color={colors.employeeEdit.removeText} />
               <Text style={styles.removeText}>Remove</Text>
-            </TouchableOpacity>
+            </TouchableOpacity>}
           </Section>
         );
       })}
-      <TouchableOpacity style={styles.addButton} onPress={() => { setExperience((current) => [...current, { ...EMPTY_EXPERIENCE }]); setDirty(true); }} accessibilityRole="button">
+      {isEditMode && <TouchableOpacity style={styles.addButton} onPress={() => { setExperience((current) => [...current, { ...EMPTY_EXPERIENCE }]); setDirty(true); }} accessibilityRole="button">
         <Ionicons name="add" size={20} color={colors.primary} />
         <Text style={styles.addText}>Add Another Experience</Text>
-      </TouchableOpacity>
-      <ActionRow step={step} loading={saving} onBack={() => goToStep(step - 1)} onSkip={() => saveExperience({ skip: true })} onNext={() => saveExperience()} />
+      </TouchableOpacity>}
+      <StepActions onBack={() => goToStep(step - 1)} onSkip={() => saveExperience({ skip: true })} onNext={() => saveExperience()} />
     </>
   );
 
@@ -1033,32 +1437,258 @@ export default function EditEmployeeScreen({ navigation }) {
       </View>
       {activeDocumentTab === 'documents' ? (
         <>
-          <Section title="Upload Document">
-            <SelectionField label="Document Type" value={documentType} options={groupedDocumentOptions} onChange={(value) => { setDocumentType(value); setDirty(true); }} placeholder="Select document type" />
-            <TouchableOpacity style={styles.fileButton} onPress={() => chooseFile()} accessibilityRole="button">
-              <Ionicons name="cloud-upload-outline" size={20} color={colors.primary} />
-              <Text style={styles.fileButtonText}>{selectedFile?.name || 'Select PDF, JPG, JPEG or PNG'}</Text>
-            </TouchableOpacity>
-            <Text style={styles.helperText}>Maximum file size: 3 MB</Text>
-            <TouchableOpacity style={[styles.primaryButton, saving && styles.buttonDisabled]} onPress={uploadDocument} disabled={saving} accessibilityRole="button">
-              {saving ? <ActivityIndicator color={colors.white} /> : <Text style={styles.primaryButtonText}>Upload Document</Text>}
-            </TouchableOpacity>
-          </Section>
-          <Section title="Uploaded Documents">
-            {documents.length ? documents.map((document) => (
-              <View key={document.id} style={styles.documentRow}>
-                <View style={styles.documentInfo}>
-                  <Text style={styles.rowTitle}>{document.documentType}</Text>
-                  <Text style={styles.rowMeta}>{document.fileName}</Text>
-                  <Text style={styles.rowMeta}>{formatFileSize(document.size)} - {formatDisplayDate(document.uploadedAt)}</Text>
-                </View>
-                <View style={styles.rowActions}>
-                  <TouchableOpacity style={styles.iconAction} onPress={() => handleDocumentAction(document, 'view')} accessibilityRole="button"><Ionicons name="eye-outline" size={18} color={colors.primary} /></TouchableOpacity>
-                  <TouchableOpacity style={styles.iconAction} onPress={() => handleDocumentAction(document, 'download')} accessibilityRole="button"><Ionicons name="download-outline" size={18} color={colors.primary} /></TouchableOpacity>
-                  <TouchableOpacity style={styles.iconActionDanger} onPress={() => confirmDeleteDocument(document)} accessibilityRole="button"><Ionicons name="trash-outline" size={18} color={colors.employeeEdit.removeText} /></TouchableOpacity>
-                </View>
+          <Section title="Documents Progress">
+            {isLoadingChecklist && !documentChecklist.length ? (
+              <View style={styles.inlineLoader}>
+                <ActivityIndicator color={colors.primary} />
+                <Text style={styles.helperText}>Loading document checklist...</Text>
               </View>
-            )) : <Text style={styles.emptyText}>No documents uploaded.</Text>}
+            ) : (
+              <>
+                <View style={styles.documentProgressTop}>
+                  <Text style={styles.documentProgressCount}>
+                    {uploadedDocumentCount}/{totalDocumentCount || 0} uploaded
+                  </Text>
+                  <Text style={styles.documentProgressMeta}>
+                    {remainingDocumentCount ? `${remainingDocumentCount} pending` : 'All checklist items uploaded'}
+                  </Text>
+                </View>
+                <View style={styles.documentProgressTrack} accessibilityLabel={`Document progress ${uploadedDocumentCount} of ${totalDocumentCount || 0}`}>
+                  <View style={[styles.documentProgressFill, { width: `${Math.round(documentProgress * 100)}%` }]} />
+                </View>
+                {!!checklistError && (
+                  <TouchableOpacity style={styles.inlineErrorBox} onPress={() => refreshDocuments()} accessibilityRole="button">
+                    <Ionicons name="alert-circle-outline" size={16} color={colors.employeeEdit.error} />
+                    <Text style={styles.inlineErrorText}>{checklistError}</Text>
+                    <Text style={styles.inlineRetryText}>Retry</Text>
+                  </TouchableOpacity>
+                )}
+              </>
+            )}
+          </Section>
+
+          <Section title="Required Documents">
+            {documentChecklist.length ? documentChecklist.map((item) => {
+              const tone = getDocumentStatusTone(item.status, item.uploaded);
+              const statusColor = tone === 'success'
+                ? colors.success
+                : tone === 'error'
+                  ? colors.employeeEdit.error
+                  : tone === 'warning'
+                    ? colors.warning
+                    : colors.textSecondary;
+              const statusBackground = tone === 'success'
+                ? colors.successBackground
+                : tone === 'error'
+                  ? colors.dangerBackground
+                  : tone === 'warning'
+                    ? colors.warningBackground
+                    : colors.mutedBackground;
+              const rowDisabled = !isEditMode || item.uploaded || isUploadingDocument;
+
+              return (
+                <TouchableOpacity
+                  key={item.documentType}
+                  style={styles.checklistRow}
+                  onPress={() => {
+                    if (rowDisabled) return;
+                    setDocumentType(item.documentType);
+                    setDirty(true);
+                  }}
+                  disabled={rowDisabled}
+                  activeOpacity={0.82}
+                  accessibilityRole="button"
+                  accessibilityState={{ disabled: rowDisabled, selected: documentType === item.documentType }}
+                >
+                  <View style={[styles.checklistIcon, { backgroundColor: statusBackground }]}>
+                    <Ionicons
+                      name={item.uploaded ? 'checkmark-circle-outline' : 'ellipse-outline'}
+                      size={20}
+                      color={statusColor}
+                    />
+                  </View>
+                  <View style={styles.checklistText}>
+                    <Text style={styles.checklistTitle}>{getFriendlyDocumentLabel(item.documentType)}</Text>
+                    <Text style={styles.checklistMeta}>
+                      {item.uploaded ? `Uploaded - ${getDocumentStatusText(item.status, item.uploaded)}` : 'Not uploaded'}
+                    </Text>
+                  </View>
+                </TouchableOpacity>
+              );
+            }) : (
+              <View style={styles.emptyDocumentState}>
+                <Ionicons name="document-text-outline" size={22} color={colors.textSecondary} />
+                <Text style={styles.emptyDocumentTitle}>No checklist available.</Text>
+                <Text style={styles.emptyText}>Pull down to refresh if the checklist does not appear.</Text>
+              </View>
+            )}
+          </Section>
+
+          {isEditMode && (
+            <Section title="Upload Document">
+              <ReadOnlySelectionField
+                label="Document Type"
+                value={documentType}
+                options={documentTypeOptions}
+                onChange={(value) => {
+                  setDocumentType(value);
+                  setDirty(true);
+                }}
+                placeholder="Select pending document type"
+                disabled={isUploadingDocument || isSavingDocumentsStep}
+              />
+              <TouchableOpacity
+                style={[styles.fileButton, (isUploadingDocument || isSavingDocumentsStep) && styles.inputDisabled]}
+                onPress={() => chooseFile()}
+                disabled={isUploadingDocument || isSavingDocumentsStep}
+                accessibilityRole="button"
+                accessibilityState={{ disabled: isUploadingDocument || isSavingDocumentsStep }}
+              >
+                <Ionicons name="cloud-upload-outline" size={20} color={colors.primary} />
+                <Text style={styles.fileButtonText}>{selectedFile?.name || 'Select PDF, JPG, JPEG or PNG'}</Text>
+              </TouchableOpacity>
+              <Text style={styles.helperText}>Maximum file size: 3 MB</Text>
+              {!!selectedFile && (
+                <View style={styles.selectedFileCard}>
+                  <View style={styles.selectedFileIcon}>
+                    <Ionicons name="document-attach-outline" size={18} color={colors.primary} />
+                  </View>
+                  <View style={styles.selectedFileInfo}>
+                    <Text style={styles.selectedFileName} numberOfLines={1}>{selectedFile.name}</Text>
+                    <Text style={styles.selectedFileMeta}>
+                      {getFileExtension(selectedFile).toUpperCase() || selectedFile.mimeType || 'FILE'} - {formatFileSize(selectedFile.size)}
+                    </Text>
+                  </View>
+                  <TouchableOpacity
+                    style={styles.selectedFileRemove}
+                    onPress={() => {
+                      if (isUploadingDocument) return;
+                      setSelectedFile(null);
+                      setDirty(true);
+                    }}
+                    disabled={isUploadingDocument}
+                    accessibilityRole="button"
+                    accessibilityLabel="Remove selected document file"
+                    accessibilityState={{ disabled: isUploadingDocument }}
+                  >
+                    <Ionicons name="close" size={18} color={colors.textSecondary} />
+                  </TouchableOpacity>
+                </View>
+              )}
+              {!!documentError && (
+                <TouchableOpacity style={styles.inlineErrorBox} onPress={() => refreshDocuments()} accessibilityRole="button">
+                  <Ionicons name="alert-circle-outline" size={16} color={colors.employeeEdit.error} />
+                  <Text style={styles.inlineErrorText}>{documentError}</Text>
+                  <Text style={styles.inlineRetryText}>Retry</Text>
+                </TouchableOpacity>
+              )}
+              <TouchableOpacity
+                style={[
+                  styles.primaryButton,
+                  (isUploadingDocument || isSavingDocumentsStep || !documentType || !selectedFile) && styles.buttonDisabled,
+                ]}
+                onPress={uploadDocument}
+                disabled={isUploadingDocument || isSavingDocumentsStep || !documentType || !selectedFile}
+                accessibilityRole="button"
+                accessibilityState={{ disabled: isUploadingDocument || isSavingDocumentsStep || !documentType || !selectedFile, busy: isUploadingDocument }}
+              >
+                {isUploadingDocument ? (
+                  <>
+                    <ActivityIndicator color={colors.white} />
+                    <Text style={styles.primaryButtonText}>Uploading...</Text>
+                  </>
+                ) : (
+                  <Text style={styles.primaryButtonText}>Upload Document</Text>
+                )}
+              </TouchableOpacity>
+            </Section>
+          )}
+          <Section title="Uploaded Documents">
+            {isLoadingDocuments && !documents.length ? (
+              <View style={styles.inlineLoader}>
+                <ActivityIndicator color={colors.primary} />
+                <Text style={styles.helperText}>Loading uploaded documents...</Text>
+              </View>
+            ) : documents.length ? documents.map((document) => {
+              const tone = getDocumentStatusTone(document.verificationStatus, true);
+              const statusColor = tone === 'success'
+                ? colors.success
+                : tone === 'error'
+                  ? colors.employeeEdit.error
+                  : colors.warning;
+              const statusBackground = tone === 'success'
+                ? colors.successBackground
+                : tone === 'error'
+                  ? colors.dangerBackground
+                  : colors.warningBackground;
+              const fileSizeText = formatFileSizeMB(document.fileSizeMB) !== '-'
+                ? formatFileSizeMB(document.fileSizeMB)
+                : formatFileSize(document.size);
+              const anyFileAction = Boolean(fileAction);
+
+              return (
+                <View key={document.id} style={styles.documentCard}>
+                  <View style={styles.documentCardHeader}>
+                    <View style={styles.documentInfo}>
+                      <Text style={styles.rowTitle}>{getFriendlyDocumentLabel(document.documentType)}</Text>
+                      <Text style={styles.rowMeta}>{document.fileName}</Text>
+                    </View>
+                    <View style={[styles.documentStatusBadge, { backgroundColor: statusBackground }]}>
+                      <Text style={[styles.documentStatusText, { color: statusColor }]}>
+                        {getDocumentStatusText(document.verificationStatus, true)}
+                      </Text>
+                    </View>
+                  </View>
+                  <View style={styles.documentMetaGroup}>
+                    <Text style={styles.rowMeta}>Type: {document.fileType || getFileExtension(document).toUpperCase() || '-'}</Text>
+                    <Text style={styles.rowMeta}>Size: {fileSizeText}</Text>
+                    <Text style={styles.rowMeta}>Uploaded: {formatDisplayDate(document.uploadedDate || document.uploadedAt)}</Text>
+                  </View>
+                  <View style={styles.rowActions}>
+                    <TouchableOpacity
+                      style={styles.documentActionButton}
+                      onPress={() => handleDocumentAction(document, 'view')}
+                      disabled={anyFileAction}
+                      accessibilityRole="button"
+                      accessibilityState={{ disabled: anyFileAction, busy: fileAction === `view-${document.id}` }}
+                    >
+                      {fileAction === `view-${document.id}` ? <ActivityIndicator size="small" color={colors.primary} /> : <Ionicons name="eye-outline" size={17} color={colors.primary} />}
+                      <Text style={styles.documentActionText}>View</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.documentActionButton}
+                      onPress={() => handleDocumentAction(document, 'download')}
+                      disabled={anyFileAction}
+                      accessibilityRole="button"
+                      accessibilityState={{ disabled: anyFileAction, busy: fileAction === `download-${document.id}` }}
+                    >
+                      {fileAction === `download-${document.id}` ? <ActivityIndicator size="small" color={colors.primary} /> : <Ionicons name="download-outline" size={17} color={colors.primary} />}
+                      <Text style={styles.documentActionText}>Download</Text>
+                    </TouchableOpacity>
+                    {isEditMode && (
+                      <TouchableOpacity
+                        style={[styles.documentActionButton, styles.documentActionDanger]}
+                        onPress={() => confirmDeleteDocument(document)}
+                        disabled={anyFileAction || isUploadingDocument}
+                        accessibilityRole="button"
+                        accessibilityState={{ disabled: anyFileAction || isUploadingDocument, busy: fileAction === `delete-${document.id}` }}
+                      >
+                        {fileAction === `delete-${document.id}` ? <ActivityIndicator size="small" color={colors.employeeEdit.removeText} /> : <Ionicons name="trash-outline" size={17} color={colors.employeeEdit.removeText} />}
+                        <Text style={[styles.documentActionText, styles.documentActionDangerText]}>Delete</Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                </View>
+              );
+            }) : (
+              <View style={styles.emptyDocumentState}>
+                <Ionicons name="folder-open-outline" size={22} color={colors.textSecondary} />
+                <Text style={styles.emptyDocumentTitle}>No documents uploaded.</Text>
+                <Text style={styles.emptyText}>
+                  {isEditMode ? 'Choose a pending document type and upload the file.' : 'Uploaded documents will appear here.'}
+                </Text>
+              </View>
+            )}
           </Section>
         </>
       ) : (
@@ -1079,21 +1709,31 @@ export default function EditEmployeeScreen({ navigation }) {
           )) : <Text style={styles.emptyText}>No employee agreements available.</Text>}
           {!!agreements.length && (
             <>
-              <SelectionField label="Agreement Type" value={agreementForm.agreementId} options={agreementOptions} onChange={(value) => { setAgreementForm((current) => ({ ...current, agreementId: value })); setDirty(true); }} placeholder="Select agreement" />
-              <Field label="Signature Name" value={agreementForm.signatureName} onChangeText={(value) => { setAgreementForm((current) => ({ ...current, signatureName: value })); setDirty(true); }} />
-              <Field label="Signed Location" value={agreementForm.signedLocation} onChangeText={(value) => { setAgreementForm((current) => ({ ...current, signedLocation: value })); setDirty(true); }} />
-              <TouchableOpacity style={styles.fileButton} onPress={() => chooseFile({ signature: true })} accessibilityRole="button">
-                <Ionicons name="image-outline" size={20} color={colors.primary} />
-                <Text style={styles.fileButtonText}>{agreementForm.signatureFile?.name || 'Select signature image'}</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={[styles.primaryButton, saving && styles.buttonDisabled]} onPress={submitAgreement} disabled={saving} accessibilityRole="button">
-                {saving ? <ActivityIndicator color={colors.white} /> : <Text style={styles.primaryButtonText}>Submit Agreement</Text>}
-              </TouchableOpacity>
+              {isEditMode && (
+                <>
+                  <ReadOnlySelectionField label="Agreement Type" value={agreementForm.agreementId} options={agreementOptions} onChange={(value) => { setAgreementForm((current) => ({ ...current, agreementId: value })); setDirty(true); }} placeholder="Select agreement" />
+                  <ReadOnlyField label="Signature Name" value={agreementForm.signatureName} onChangeText={(value) => { setAgreementForm((current) => ({ ...current, signatureName: value })); setDirty(true); }} />
+                  <ReadOnlyField label="Signed Location" value={agreementForm.signedLocation} onChangeText={(value) => { setAgreementForm((current) => ({ ...current, signedLocation: value })); setDirty(true); }} />
+                  <TouchableOpacity style={styles.fileButton} onPress={() => chooseFile({ signature: true })} accessibilityRole="button">
+                    <Ionicons name="image-outline" size={20} color={colors.primary} />
+                    <Text style={styles.fileButtonText}>{agreementForm.signatureFile?.name || 'Select signature image'}</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={[styles.primaryButton, saving && styles.buttonDisabled]} onPress={submitAgreement} disabled={saving} accessibilityRole="button">
+                    {saving ? <ActivityIndicator color={colors.white} /> : <Text style={styles.primaryButtonText}>Submit Agreement</Text>}
+                  </TouchableOpacity>
+                </>
+              )}
             </>
           )}
         </Section>
       )}
-      <ActionRow step={step} loading={saving} onBack={() => goToStep(step - 1)} onNext={() => { setDirty(false); setMaxStep((current) => Math.max(current, 5)); setStep(5); }} />
+      <StepActions
+        onBack={() => goToStep(step - 1)}
+        onNext={continueFromDocuments}
+        nextLabel="Next"
+        loading={isSavingDocumentsStep}
+        disabled={isUploadingDocument}
+      />
     </>
   );
 
@@ -1121,7 +1761,7 @@ export default function EditEmployeeScreen({ navigation }) {
         <ReviewRow label="Date of Joining" value={formatDisplayDate(personal.joiningDate)} />
         <ReviewRow label="Blood Group" value={personal.bloodGroup} />
         <ReviewRow label="Address" value={`${personal.houseNo}, ${personal.street}, ${personal.city}, ${personal.district}, ${personal.state}, ${personal.country} - ${personal.pincode}`} />
-        <TouchableOpacity style={styles.editStepButton} onPress={() => goToStep(0)}><Text style={styles.addText}>Edit Personal Information</Text></TouchableOpacity>
+        {isEditMode && <TouchableOpacity style={styles.editStepButton} onPress={() => goToStep(0)}><Text style={styles.addText}>Edit Personal Information</Text></TouchableOpacity>}
       </Section>
       <Section title="Bank Information">
         <ReviewRow label="Customer ID" value={bank.customerId} />
@@ -1132,7 +1772,7 @@ export default function EditEmployeeScreen({ navigation }) {
         <ReviewRow label="Branch Name" value={bank.branch} />
         <ReviewRow label="UAN Number" value={maskLastFour(bank.uan)} sensitive />
         <ReviewRow label="PF Account Number" value={maskLastFour(bank.pf)} sensitive />
-        <TouchableOpacity style={styles.editStepButton} onPress={() => goToStep(1)}><Text style={styles.addText}>Edit Bank Information</Text></TouchableOpacity>
+        {isEditMode && <TouchableOpacity style={styles.editStepButton} onPress={() => goToStep(1)}><Text style={styles.addText}>Edit Bank Information</Text></TouchableOpacity>}
       </Section>
       <Section title="Education">
         {educationPayload(education, employeeId).length ? educationPayload(education, employeeId).map((item, index) => (
@@ -1144,7 +1784,7 @@ export default function EditEmployeeScreen({ navigation }) {
             <ReviewRow label="Specialization" value={item.Specialization} />
           </View>
         )) : <Text style={styles.emptyText}>No education details.</Text>}
-        <TouchableOpacity style={styles.editStepButton} onPress={() => goToStep(2)}><Text style={styles.addText}>Edit Education</Text></TouchableOpacity>
+        {isEditMode && <TouchableOpacity style={styles.editStepButton} onPress={() => goToStep(2)}><Text style={styles.addText}>Edit Education</Text></TouchableOpacity>}
       </Section>
       <Section title="Experience">
         {experiencePayload(experience, employeeId).length ? experiencePayload(experience, employeeId).map((item, index) => (
@@ -1158,7 +1798,7 @@ export default function EditEmployeeScreen({ navigation }) {
             <ReviewRow label="Description" value={item.Description} />
           </View>
         )) : <Text style={styles.emptyText}>No experience details.</Text>}
-        <TouchableOpacity style={styles.editStepButton} onPress={() => goToStep(3)}><Text style={styles.addText}>Edit Experience</Text></TouchableOpacity>
+        {isEditMode && <TouchableOpacity style={styles.editStepButton} onPress={() => goToStep(3)}><Text style={styles.addText}>Edit Experience</Text></TouchableOpacity>}
       </Section>
       <Section title="Uploaded Documents">
         {documents.length ? documents.map((item) => (
@@ -1167,14 +1807,14 @@ export default function EditEmployeeScreen({ navigation }) {
             <TouchableOpacity onPress={() => handleDocumentAction(item, 'view')}><Text style={styles.addText}>{item.fileName}</Text></TouchableOpacity>
           </View>
         )) : <Text style={styles.emptyText}>No uploaded documents.</Text>}
-        <TouchableOpacity style={styles.editStepButton} onPress={() => goToStep(4)}><Text style={styles.addText}>Edit Documents</Text></TouchableOpacity>
+        {isEditMode && <TouchableOpacity style={styles.editStepButton} onPress={() => goToStep(4)}><Text style={styles.addText}>Edit Documents</Text></TouchableOpacity>}
       </Section>
       {!!agreements.length && (
         <Section title="Employee Agreements">
           {agreements.map((item) => <ReviewRow key={item.id} label={item.agreementName} value={item.status} />)}
         </Section>
       )}
-      <ActionRow step={step} loading={saving} onBack={() => goToStep(step - 1)} onNext={finishReview} nextLabel="Finish" />
+      <StepActions onBack={() => goToStep(step - 1)} onNext={finishReview} nextLabel="Finish" />
     </>
   );
 
@@ -1206,21 +1846,52 @@ export default function EditEmployeeScreen({ navigation }) {
         contentContainerStyle={[styles.content, { paddingBottom: sizes.floatingTabHeight + insets.bottom + spacing.xxxl * 3 }]}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
+        keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
-            onRefresh={() => loadAll({ refresh: true })}
+            onRefresh={handleRefresh}
             tintColor={colors.primary}
             colors={[colors.primary]}
           />
         }
       >
         <View style={styles.headerBlock}>
-          <Text style={styles.screenTitle}>Add Employee Details</Text>
-          <Text style={styles.screenSubtitle}>Review and update your employee profile details.</Text>
+          <View style={styles.titleRow}>
+            <View style={styles.titleTextWrap}>
+              <Text style={styles.screenTitle}>Add Employee Details</Text>
+              <Text style={styles.screenSubtitle}>
+                {isEditMode ? 'Edit and save your employee profile details.' : 'Review your employee profile details.'}
+              </Text>
+            </View>
+            <TouchableOpacity
+              style={[styles.editModeButton, isEditMode && styles.editModeButtonActive]}
+              onPress={isEditMode ? exitEditMode : enterEditMode}
+              activeOpacity={0.82}
+              accessibilityRole="button"
+              accessibilityLabel={isEditMode ? 'Done editing employee details' : 'Edit employee details'}
+            >
+              <Ionicons name={isEditMode ? 'checkmark' : 'create-outline'} size={18} color={isEditMode ? colors.white : colors.primary} />
+              <Text style={[styles.editModeButtonText, isEditMode && styles.editModeButtonTextActive]}>
+                {isEditMode ? 'Done' : 'Edit'}
+              </Text>
+            </TouchableOpacity>
+          </View>
+          {!isEditMode && (
+            <View style={styles.readOnlyBanner}>
+              <Ionicons name="lock-closed-outline" size={16} color={colors.primary} />
+              <Text style={styles.readOnlyBannerText}>Tap Edit to update your details.</Text>
+            </View>
+          )}
         </View>
 
-        <Stepper step={step} maxStep={maxStep} onStepPress={goToStep} />
+        <Stepper
+          step={step}
+          maxStep={isEditMode ? maxStep : STEPS.length - 1}
+          onStepPress={goToStep}
+          completedStepIndexes={completedStepIndexes}
+          showCompletion={isEditMode}
+        />
 
         {!!apiError && (
           <View style={styles.messageBoxError}>
@@ -1274,6 +1945,17 @@ const styles = StyleSheet.create({
   headerBlock: {
     gap: spacing.sm,
   },
+  titleRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: spacing.lg,
+  },
+  titleTextWrap: {
+    flex: 1,
+    minWidth: 0,
+    gap: spacing.sm,
+  },
   screenTitle: {
     color: colors.textPrimary,
     fontSize: fontSizes.dashboardTitle,
@@ -1284,6 +1966,49 @@ const styles = StyleSheet.create({
     fontSize: fontSizes.body,
     lineHeight: lineHeights.body,
     fontWeight: fontWeights.medium,
+  },
+  editModeButton: {
+    minHeight: sizes.minTouchTarget,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.sm,
+    borderRadius: radii.pill,
+    borderWidth: 1,
+    borderColor: colors.employeeEdit.border,
+    backgroundColor: colors.employeeEdit.surface,
+    paddingHorizontal: spacing.lg,
+  },
+  editModeButtonActive: {
+    borderColor: colors.primary,
+    backgroundColor: colors.primary,
+  },
+  editModeButtonText: {
+    color: colors.primary,
+    fontSize: fontSizes.base,
+    fontWeight: fontWeights.extraBold,
+  },
+  editModeButtonTextActive: {
+    color: colors.white,
+  },
+  readOnlyBanner: {
+    minHeight: 40,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    borderRadius: radii.lg,
+    borderWidth: 1,
+    borderColor: colors.employeeEdit.border,
+    backgroundColor: colors.employeeEdit.secondaryAction,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.sm,
+  },
+  readOnlyBannerText: {
+    flex: 1,
+    minWidth: 0,
+    color: colors.textSecondary,
+    fontSize: fontSizes.base,
+    fontWeight: fontWeights.semibold,
   },
   stepperCard: {
     padding: spacing.lg,
@@ -1430,6 +2155,9 @@ const styles = StyleSheet.create({
     backgroundColor: colors.mutedBackground,
     color: colors.textSecondary,
   },
+  readOnlyControl: {
+    backgroundColor: colors.mutedBackground,
+  },
   dateInput: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1465,6 +2193,9 @@ const styles = StyleSheet.create({
   optionChipActive: {
     backgroundColor: colors.employeeEdit.optionActiveBackground,
     borderColor: colors.primary,
+  },
+  optionChipDisabled: {
+    opacity: 0.82,
   },
   optionText: {
     color: colors.textSecondary,
@@ -1574,6 +2305,9 @@ const styles = StyleSheet.create({
   selectorRowActive: {
     backgroundColor: colors.employeeEdit.optionActiveBackground,
   },
+  selectorRowDisabled: {
+    opacity: 0.55,
+  },
   selectorTextWrap: {
     flex: 1,
     minWidth: 0,
@@ -1602,6 +2336,36 @@ const styles = StyleSheet.create({
     color: colors.textSecondary,
     fontSize: fontSizes.base,
     lineHeight: 19,
+  },
+  inlineLoader: {
+    minHeight: 52,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+  },
+  inlineErrorBox: {
+    minHeight: 44,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    borderRadius: radii.lg,
+    borderWidth: 1,
+    borderColor: colors.dangerBorder,
+    backgroundColor: colors.dangerBackground,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+  },
+  inlineErrorText: {
+    flex: 1,
+    minWidth: 0,
+    color: colors.employeeEdit.error,
+    fontSize: fontSizes.sm,
+    fontWeight: fontWeights.semibold,
+  },
+  inlineRetryText: {
+    color: colors.primary,
+    fontSize: fontSizes.sm,
+    fontWeight: fontWeights.extraBold,
   },
   actions: {
     gap: spacing.lg,
@@ -1637,6 +2401,9 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.employeeEdit.border,
     paddingHorizontal: spacing.xxl,
+  },
+  secondaryButtonDisabled: {
+    opacity: 0.58,
   },
   secondaryButtonText: {
     color: colors.primary,
@@ -1724,6 +2491,112 @@ const styles = StyleSheet.create({
     fontSize: fontSizes.body,
     fontWeight: fontWeights.semibold,
   },
+  documentProgressTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.md,
+  },
+  documentProgressCount: {
+    color: colors.textPrimary,
+    fontSize: fontSizes.body,
+    fontWeight: fontWeights.extraBold,
+  },
+  documentProgressMeta: {
+    flexShrink: 1,
+    color: colors.textSecondary,
+    fontSize: fontSizes.base,
+    fontWeight: fontWeights.semibold,
+    textAlign: 'right',
+  },
+  documentProgressTrack: {
+    height: 8,
+    overflow: 'hidden',
+    borderRadius: radii.pill,
+    backgroundColor: colors.mutedBackground,
+  },
+  documentProgressFill: {
+    height: '100%',
+    borderRadius: radii.pill,
+    backgroundColor: colors.primary,
+  },
+  checklistRow: {
+    minHeight: 64,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    borderRadius: radii.lg,
+    borderWidth: 1,
+    borderColor: colors.employeeEdit.border,
+    backgroundColor: colors.employeeEdit.inputBackground,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
+  },
+  checklistIcon: {
+    width: 38,
+    height: 38,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: radii.pill,
+  },
+  checklistText: {
+    flex: 1,
+    minWidth: 0,
+  },
+  checklistTitle: {
+    color: colors.textPrimary,
+    fontSize: fontSizes.body,
+    fontWeight: fontWeights.extraBold,
+  },
+  checklistMeta: {
+    marginTop: spacing.xs,
+    color: colors.textSecondary,
+    fontSize: fontSizes.sm,
+    fontWeight: fontWeights.semibold,
+  },
+  selectedFileCard: {
+    minHeight: 58,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    borderRadius: radii.lg,
+    borderWidth: 1,
+    borderColor: colors.employeeEdit.border,
+    backgroundColor: colors.employeeEdit.reviewSurface,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+  },
+  selectedFileIcon: {
+    width: 36,
+    height: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: radii.pill,
+    backgroundColor: colors.employeeEdit.secondaryAction,
+  },
+  selectedFileInfo: {
+    flex: 1,
+    minWidth: 0,
+  },
+  selectedFileName: {
+    color: colors.textPrimary,
+    fontSize: fontSizes.base,
+    fontWeight: fontWeights.extraBold,
+  },
+  selectedFileMeta: {
+    marginTop: spacing.xs,
+    color: colors.textSecondary,
+    fontSize: fontSizes.sm,
+    fontWeight: fontWeights.medium,
+  },
+  selectedFileRemove: {
+    width: 34,
+    height: 34,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: radii.pill,
+    backgroundColor: colors.employeeEdit.secondaryAction,
+  },
   documentRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1750,6 +2623,55 @@ const styles = StyleSheet.create({
   rowActions: {
     flexDirection: 'row',
     gap: spacing.sm,
+    flexWrap: 'wrap',
+  },
+  documentCard: {
+    gap: spacing.md,
+    borderRadius: radii.lg,
+    borderWidth: 1,
+    borderColor: colors.employeeEdit.border,
+    backgroundColor: colors.employeeEdit.inputBackground,
+    padding: spacing.lg,
+  },
+  documentCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: spacing.md,
+  },
+  documentStatusBadge: {
+    flexShrink: 0,
+    borderRadius: radii.pill,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.xs,
+  },
+  documentStatusText: {
+    fontSize: fontSizes.sm,
+    fontWeight: fontWeights.extraBold,
+  },
+  documentMetaGroup: {
+    gap: spacing.xs,
+  },
+  documentActionButton: {
+    minHeight: 38,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.xs,
+    borderRadius: radii.pill,
+    backgroundColor: colors.employeeEdit.secondaryAction,
+    paddingHorizontal: spacing.md,
+  },
+  documentActionText: {
+    color: colors.primary,
+    fontSize: fontSizes.sm,
+    fontWeight: fontWeights.extraBold,
+  },
+  documentActionDanger: {
+    backgroundColor: colors.dangerBackground,
+  },
+  documentActionDangerText: {
+    color: colors.employeeEdit.removeText,
   },
   iconAction: {
     width: 36,
@@ -1771,6 +2693,21 @@ const styles = StyleSheet.create({
     color: colors.textSecondary,
     fontSize: fontSizes.body,
     lineHeight: lineHeights.body,
+  },
+  emptyDocumentState: {
+    alignItems: 'center',
+    gap: spacing.sm,
+    borderRadius: radii.lg,
+    borderWidth: 1,
+    borderColor: colors.employeeEdit.border,
+    backgroundColor: colors.employeeEdit.reviewSurface,
+    padding: spacing.xxl,
+  },
+  emptyDocumentTitle: {
+    color: colors.textPrimary,
+    fontSize: fontSizes.body,
+    fontWeight: fontWeights.extraBold,
+    textAlign: 'center',
   },
   reviewRow: {
     gap: spacing.xs,

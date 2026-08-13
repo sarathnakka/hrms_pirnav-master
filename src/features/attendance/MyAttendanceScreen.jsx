@@ -10,7 +10,6 @@ import {
   RefreshControl,
   StyleSheet,
   Text,
-  TextInput,
   TouchableOpacity,
   useWindowDimensions,
   View,
@@ -18,6 +17,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 
+import AppTextInput from '../../shared/components/AppTextInput';
 import { getCurrentLocation } from '../../services/locationService';
 import {
   colors,
@@ -36,6 +36,13 @@ import {
 } from './attendanceApi';
 
 const DEFAULT_CHECK_IN_START_TIME = '08:55:00';
+const REASON_SUBMISSION_STATE = {
+  IDLE: 'idle',
+  SUBMITTING: 'submitting',
+  VERIFYING: 'verifying',
+  UNCONFIRMED: 'unconfirmed',
+  COMPLETED: 'completed',
+};
 
 function parseTimeToSeconds(value) {
   const normalized = String(value || '').trim();
@@ -112,6 +119,11 @@ function formatTime12h(timeStr) {
 
 function getStatusBadgeStyle(status) {
   const s = (status || '').toLowerCase();
+  if (s === 'lmc' || s.includes('late & missed checkout') || s.includes('late missed checkout')) {
+    return { bg: colors.warningBackground, color: colors.warning };
+  } else if (s === 'mc' || s.includes('missed checkout')) {
+    return { bg: colors.warningBackground, color: colors.warning };
+  }
   if (s.includes('present')) {
     return { bg: colors.successBackground, color: colors.success };
   } else if (s.includes('absent')) {
@@ -124,6 +136,22 @@ function getStatusBadgeStyle(status) {
     return { bg: colors.divider, color: colors.textSecondary };
   }
   return { bg: colors.mutedBackground, color: colors.placeholder };
+}
+
+function formatAttendanceStatusLabel(status) {
+  const normalized = String(status || '').trim();
+  const lower = normalized.toLowerCase();
+  if (lower === 'mc' || lower === 'missed checkout') {
+    return 'Missed Checkout';
+  }
+  if (
+    lower === 'lmc' ||
+    lower === 'late & missed checkout' ||
+    lower === 'late missed checkout'
+  ) {
+    return 'Late & Missed Checkout';
+  }
+  return normalized || '--';
 }
 
 function getCurrentStatusMeta(isCheckedIn, isCheckedOut) {
@@ -140,7 +168,7 @@ function getCurrentStatusMeta(isCheckedIn, isCheckedOut) {
       label: 'Live attendance',
       bg: colors.attendance.checkedInBackground,
       color: colors.success,
-      icon: 'radio-button-on-outline',
+      icon: null,
     };
   }
   return {
@@ -291,6 +319,9 @@ export default function MyAttendanceScreen() {
   const [locationReason, setLocationReason] = useState('');
   const [lastCapturedLocation, setLastCapturedLocation] = useState(null);
   const [isSubmittingReason, setIsSubmittingReason] = useState(false);
+  const [isVerifyingReasonSubmission, setIsVerifyingReasonSubmission] = useState(false);
+  const [reasonSubmissionState, setReasonSubmissionState] = useState(REASON_SUBMISSION_STATE.IDLE);
+  const [reasonSubmissionError, setReasonSubmissionError] = useState('');
 
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(30)).current;
@@ -298,6 +329,9 @@ export default function MyAttendanceScreen() {
   const historyRequestIdRef = useRef(0);
   const todayRequestIdRef = useRef(0);
   const activeTabRef = useRef(activeTab);
+  const reasonSubmissionLockRef = useRef(false);
+  const checkoutReasonAttemptIdRef = useRef(null);
+  const attendanceMutationGuardRef = useRef(null);
 
   const effectiveCheckInStartTime =
     attendanceSettings?.checkInStartTime || DEFAULT_CHECK_IN_START_TIME;
@@ -330,8 +364,33 @@ export default function MyAttendanceScreen() {
         : isBeforeCheckInStartTime
           ? `Check-in opens at ${checkInOpeningLabel}.`
           : 'Check-in is available now.';
+  const isReasonSubmissionBusy =
+    reasonSubmissionState === REASON_SUBMISSION_STATE.SUBMITTING ||
+    reasonSubmissionState === REASON_SUBMISSION_STATE.VERIFYING ||
+    isSubmittingReason ||
+    isVerifyingReasonSubmission;
+  const isReasonSubmissionUnconfirmed =
+    reasonSubmissionState === REASON_SUBMISSION_STATE.UNCONFIRMED;
+
+  const clearExpiredAttendanceMutationGuard = useCallback((now = new Date()) => {
+    const guard = attendanceMutationGuardRef.current;
+    if (guard && guard.dateKey !== getLocalDateKey(now)) {
+      attendanceMutationGuardRef.current = null;
+      return null;
+    }
+    return guard;
+  }, []);
+
+  const setAttendanceMutationGuard = useCallback((guard) => {
+    attendanceMutationGuardRef.current = {
+      dateKey: getLocalDateKey(new Date()),
+      createdAt: Date.now(),
+      ...guard,
+    };
+  }, []);
 
   const applyTodayRecord = useCallback((record) => {
+    const guard = clearExpiredAttendanceMutationGuard(new Date());
     const rawCheckIn =
       record?.checkIn ??
       record?.checkInTime ??
@@ -356,11 +415,34 @@ export default function MyAttendanceScreen() {
 
     const checkedIn = hasValidAttendanceTime(rawCheckIn);
     const checkedOut = hasValidAttendanceTime(rawCheckOut);
+    let nextCheckedIn = checkedIn;
+    let nextCheckedOut = checkedOut;
+    let nextCheckInTime = checkedIn ? formatTime12h(rawCheckIn) : '--';
+    let nextCheckOutTime = checkedOut ? formatTime12h(rawCheckOut) : '--';
 
-    setIsCheckedIn(checkedIn);
-    setIsCheckedOut(checkedOut);
-    setCheckInTime(checkedIn ? formatTime12h(rawCheckIn) : '--');
-    setCheckOutTime(checkedOut ? formatTime12h(rawCheckOut) : '--');
+    if (guard?.type === 'checkin') {
+      if (!nextCheckedIn && hasValidAttendanceTime(guard.checkInTime)) {
+        nextCheckedIn = true;
+        nextCheckInTime = formatTime12h(guard.checkInTime);
+      } else if (nextCheckedIn) {
+        attendanceMutationGuardRef.current = null;
+      }
+    }
+
+    if (guard?.type === 'checkout') {
+      if (!nextCheckedOut && hasValidAttendanceTime(guard.checkOutTime)) {
+        nextCheckedIn = true;
+        nextCheckedOut = true;
+        nextCheckOutTime = formatTime12h(guard.checkOutTime);
+      } else if (nextCheckedOut) {
+        attendanceMutationGuardRef.current = null;
+      }
+    }
+
+    setIsCheckedIn(nextCheckedIn);
+    setIsCheckedOut(nextCheckedOut);
+    setCheckInTime(nextCheckInTime);
+    setCheckOutTime(nextCheckOutTime);
     setTotalHours(
       rawHours !== null &&
         rawHours !== undefined &&
@@ -368,7 +450,7 @@ export default function MyAttendanceScreen() {
         ? String(rawHours)
         : '--'
     );
-  }, []);
+  }, [clearExpiredAttendanceMutationGuard]);
 
   const resetTodayStatus = useCallback(() => {
     setIsCheckedIn(false);
@@ -408,6 +490,10 @@ export default function MyAttendanceScreen() {
       // }
 
       if (!todayRecord) {
+        if (clearExpiredAttendanceMutationGuard(new Date())) {
+          setTodayError('');
+          return;
+        }
         resetTodayStatus();
         setTodayError('');
         return;
@@ -418,25 +504,27 @@ export default function MyAttendanceScreen() {
     } catch (error) {
       setTodayError(error?.message || 'Unable to load today attendance.');
     } finally {
-      if (requestId === todayRequestIdRef.current && !silent) {
+      if (requestId === todayRequestIdRef.current) {
         setIsLoadingToday(false);
       }
     }
-  }, [applyTodayRecord, resetTodayStatus]);
+  }, [applyTodayRecord, clearExpiredAttendanceMutationGuard, resetTodayStatus]);
 
-  const loadAttendanceSettings = useCallback(async () => {
-    setIsLoadingAttendanceSettings(true);
+  const loadAttendanceSettings = useCallback(async ({ silent = false } = {}) => {
+    if (!silent) setIsLoadingAttendanceSettings(true);
 
-    const result = await getAttendanceSettings();
+    try {
+      const result = await getAttendanceSettings();
 
-    if (result.success && result.data?.checkInStartTime) {
-      setAttendanceSettings(result.data);
-      setAttendanceSettingsError('');
-    } else {
-      setAttendanceSettingsError(result.message || 'Unable to load attendance timing.');
+      if (result.success && result.data?.checkInStartTime) {
+        setAttendanceSettings(result.data);
+        setAttendanceSettingsError('');
+      } else {
+        setAttendanceSettingsError(result.message || 'Unable to load attendance timing.');
+      }
+    } finally {
+      setIsLoadingAttendanceSettings(false);
     }
-
-    setIsLoadingAttendanceSettings(false);
   }, []);
 
   const loadHistoryData = useCallback(async (period, { silent = false } = {}) => {
@@ -445,20 +533,188 @@ export default function MyAttendanceScreen() {
     if (!silent) setIsLoadingHistory(true);
     setHistoryError('');
 
-    const res = await getAttendanceHistory(period);
+    try {
+      const res = await getAttendanceHistory(period);
 
-    if (requestId !== historyRequestIdRef.current) return;
+      if (requestId !== historyRequestIdRef.current) return;
 
-    if (res.success && Array.isArray(res.data)) {
-      setHistoryList(res.data);
-      setHistoryError('');
-    } else {
-      setHistoryList([]);
-      setHistoryError(res.message || 'Unable to load attendance history.');
+      if (res.success && Array.isArray(res.data)) {
+        setHistoryList(res.data);
+        setHistoryError('');
+      } else {
+        if (!silent) {
+          setHistoryList([]);
+        }
+        setHistoryError(res.message || 'Unable to load attendance history.');
+      }
+    } catch (error) {
+      if (requestId === historyRequestIdRef.current) {
+        if (!silent) {
+          setHistoryList([]);
+        }
+        setHistoryError(error?.message || 'Unable to load attendance history.');
+      }
+    } finally {
+      if (requestId === historyRequestIdRef.current) {
+        setIsLoadingHistory(false);
+      }
+    }
+  }, []);
+
+  const releaseReasonSubmissionLock = useCallback(() => {
+    reasonSubmissionLockRef.current = false;
+    setIsSubmittingReason(false);
+    setIsVerifyingReasonSubmission(false);
+    setReasonSubmissionState(REASON_SUBMISSION_STATE.IDLE);
+  }, []);
+
+  const closeReasonModal = useCallback(() => {
+    if (reasonSubmissionLockRef.current) return;
+
+    setIsReasonModalVisible(false);
+    setLocationReason('');
+    setLastCapturedLocation(null);
+    setReasonSubmissionError('');
+    setReasonSubmissionState(REASON_SUBMISSION_STATE.IDLE);
+    checkoutReasonAttemptIdRef.current = null;
+  }, []);
+
+  const verifyCheckoutRecorded = useCallback(async ({ attempts = 3, delayMs = 1500 } = {}) => {
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      if (attempt > 0) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+
+      const result = await getAttendanceHistory('Week');
+
+      if (result.success && Array.isArray(result.data)) {
+        const todayRecord = findTodayRecordFromCurrentWeek(result.data, new Date());
+        const checkoutValue =
+          todayRecord?.checkOut ??
+          todayRecord?.checkOutTime ??
+          todayRecord?.checkoutTime ??
+          '';
+
+        if (hasValidAttendanceTime(checkoutValue)) {
+          return {
+            confirmed: true,
+            record: todayRecord,
+          };
+        }
+      }
     }
 
-    if (!silent) setIsLoadingHistory(false);
+    return {
+      confirmed: false,
+      record: null,
+    };
   }, []);
+
+  const completeReasonCheckoutSuccess = useCallback(
+    async (source, message) => {
+      const rawCheckOut =
+        source?.checkOut ??
+        source?.checkOutTime ??
+        source?.checkoutTime ??
+        source?.data?.checkOut ??
+        source?.data?.checkOutTime ??
+        '';
+      const successfulCheckOutTime = hasValidAttendanceTime(rawCheckOut)
+        ? rawCheckOut
+        : formatLocalTimeForState(new Date());
+
+      const rawHours =
+        source?.hours ??
+        source?.workingHours ??
+        source?.totalHours ??
+        source?.data?.hours ??
+        source?.data?.workingHours ??
+        source?.data?.totalHours ??
+        '';
+
+      setIsCheckedIn(true);
+      setIsCheckedOut(true);
+      setAttendanceMutationGuard({
+        type: 'checkout',
+        checkOutTime: successfulCheckOutTime,
+      });
+
+      setCheckOutTime(formatTime12h(successfulCheckOutTime));
+
+      if (rawHours !== null && rawHours !== undefined && String(rawHours).trim()) {
+        setTotalHours(String(rawHours));
+      }
+
+      setIsReasonModalVisible(false);
+      setLocationReason('');
+      setLastCapturedLocation(null);
+      setReasonSubmissionError('');
+      setReasonSubmissionState(REASON_SUBMISSION_STATE.COMPLETED);
+      checkoutReasonAttemptIdRef.current = null;
+      releaseReasonSubmissionLock();
+
+      Alert.alert(
+        'Check-Out Submitted',
+        message || 'Your location reason and checkout were recorded.'
+      );
+
+      await Promise.all([
+        loadTodayStatus({ silent: true }),
+        loadHistoryData(activeTabRef.current, { silent: true }),
+      ]);
+    },
+    [loadHistoryData, loadTodayStatus, releaseReasonSubmissionLock, setAttendanceMutationGuard]
+  );
+
+  const reconcileAlreadyCheckedOut = useCallback(async () => {
+    setReasonSubmissionState(REASON_SUBMISSION_STATE.VERIFYING);
+    setIsVerifyingReasonSubmission(true);
+    const verification = await verifyCheckoutRecorded();
+    setIsVerifyingReasonSubmission(false);
+
+    if (verification.confirmed) {
+      await completeReasonCheckoutSuccess(
+        verification.record,
+        'Your checkout has already been recorded.'
+      );
+      return true;
+    }
+
+    setReasonSubmissionState(REASON_SUBMISSION_STATE.IDLE);
+    return false;
+  }, [completeReasonCheckoutSuccess, verifyCheckoutRecorded]);
+
+  const handleVerifyUnconfirmedCheckout = useCallback(async () => {
+    if (reasonSubmissionState !== REASON_SUBMISSION_STATE.UNCONFIRMED) {
+      return;
+    }
+
+    setReasonSubmissionState(REASON_SUBMISSION_STATE.VERIFYING);
+    setIsVerifyingReasonSubmission(true);
+    setReasonSubmissionError('');
+
+    try {
+      const verification = await verifyCheckoutRecorded({
+        attempts: 3,
+        delayMs: 1500,
+      });
+
+      if (verification.confirmed) {
+        await completeReasonCheckoutSuccess(
+          verification.record,
+          'Your checkout has already been recorded.'
+        );
+        return;
+      }
+
+      setReasonSubmissionError(
+        'Checkout status could not be confirmed. Refresh attendance before attempting checkout again.'
+      );
+      setReasonSubmissionState(REASON_SUBMISSION_STATE.UNCONFIRMED);
+    } finally {
+      setIsVerifyingReasonSubmission(false);
+    }
+  }, [completeReasonCheckoutSuccess, reasonSubmissionState, verifyCheckoutRecorded]);
 
   useEffect(() => {
     activeTabRef.current = activeTab;
@@ -493,23 +749,25 @@ export default function MyAttendanceScreen() {
   useEffect(() => {
     const timer = setInterval(() => {
       setCurrentTime(new Date());
+      clearExpiredAttendanceMutationGuard(new Date());
     }, 15000);
 
     return () => clearInterval(timer);
-  }, []);
+  }, [clearExpiredAttendanceMutationGuard]);
 
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (nextState) => {
       if (nextState === 'active') {
         setCurrentTime(new Date());
+        clearExpiredAttendanceMutationGuard(new Date());
         loadTodayStatus({ silent: true });
-        loadAttendanceSettings();
+        loadAttendanceSettings({ silent: true });
         loadHistoryData(activeTabRef.current, { silent: true });
       }
     });
 
     return () => subscription.remove();
-  }, [loadAttendanceSettings, loadHistoryData, loadTodayStatus]);
+  }, [clearExpiredAttendanceMutationGuard, loadAttendanceSettings, loadHistoryData, loadTodayStatus]);
 
   const handleTabChange = (tabName) => {
     activeTabRef.current = tabName;
@@ -519,14 +777,18 @@ export default function MyAttendanceScreen() {
 
   const handleRefresh = useCallback(async () => {
     setIsRefreshing(true);
-    await Promise.all([
-      loadTodayStatus({ silent: true }),
-      loadHistoryData(activeTab, { silent: true }),
-      loadAttendanceSettings({ silent: true }),
-    ]);
-    setCurrentTime(new Date());
-    setIsRefreshing(false);
-  }, [activeTab, loadAttendanceSettings, loadHistoryData, loadTodayStatus]);
+    try {
+      await Promise.all([
+        loadTodayStatus({ silent: true }),
+        loadHistoryData(activeTab, { silent: true }),
+        loadAttendanceSettings({ silent: true }),
+      ]);
+      setCurrentTime(new Date());
+      clearExpiredAttendanceMutationGuard(new Date());
+    } finally {
+      setIsRefreshing(false);
+    }
+  }, [activeTab, clearExpiredAttendanceMutationGuard, loadAttendanceSettings, loadHistoryData, loadTodayStatus]);
 
   const handleCheckInPress = async () => {
     const now = new Date();
@@ -549,43 +811,49 @@ export default function MyAttendanceScreen() {
 
     setIsCheckingIn(true);
 
-    const locResult = await getCurrentLocation();
-    if (!locResult.success) {
+    try {
+      const locResult = await getCurrentLocation();
+      if (!locResult.success) {
+        return;
+      }
+
+      const res = await checkInAttendance(locResult.location);
+
+      if (res.success) {
+        const rawServerCheckIn =
+          res.data?.checkIn ??
+          res.data?.checkInTime ??
+          res.data?.data?.checkIn ??
+          res.data?.data?.checkInTime ??
+          '';
+        const successfulCheckInTime = rawServerCheckIn || formatLocalTimeForState(now);
+        const serverTime = formatTime12h(successfulCheckInTime);
+
+        setIsCheckedIn(true);
+        setIsCheckedOut(false);
+        setCheckInTime(serverTime);
+        setCheckOutTime('--');
+        setAttendanceMutationGuard({
+          type: 'checkin',
+          checkInTime: successfulCheckInTime,
+        });
+        if (totalHours === '--' || !totalHours) {
+          setTotalHours('0h 0m');
+        }
+
+        Alert.alert('Check-In Successful!', res.message || `Checked in at ${serverTime}`);
+        await Promise.all([
+          loadTodayStatus({ silent: true }),
+          loadHistoryData(activeTab, { silent: true }),
+        ]);
+      } else {
+        if ((res.message || '').toLowerCase().includes('already checked in')) {
+          loadTodayStatus({ silent: true });
+        }
+        Alert.alert('Check-In Failed', res.message || 'Unable to check in. Please try again.');
+      }
+    } finally {
       setIsCheckingIn(false);
-      return;
-    }
-
-    const res = await checkInAttendance(locResult.location);
-    setIsCheckingIn(false);
-
-    if (res.success) {
-      const rawServerCheckIn =
-        res.data?.checkIn ??
-        res.data?.checkInTime ??
-        res.data?.data?.checkIn ??
-        res.data?.data?.checkInTime ??
-        '';
-      const successfulCheckInTime = rawServerCheckIn || formatLocalTimeForState(now);
-      const serverTime = formatTime12h(successfulCheckInTime);
-
-      setIsCheckedIn(true);
-      setIsCheckedOut(false);
-      setCheckInTime(serverTime);
-      setCheckOutTime('--');
-      if (totalHours === '--' || !totalHours) {
-        setTotalHours('0h 0m');
-      }
-
-      Alert.alert('Check-In Successful!', res.message || `Checked in at ${serverTime}`);
-      await Promise.all([
-        loadTodayStatus({ silent: true }),
-        loadHistoryData(activeTab, { silent: true }),
-      ]);
-    } else {
-      if ((res.message || '').toLowerCase().includes('already checked in')) {
-        loadTodayStatus({ silent: true });
-      }
-      Alert.alert('Check-In Failed', res.message || 'Unable to check in. Please try again.');
     }
   };
 
@@ -601,108 +869,195 @@ export default function MyAttendanceScreen() {
 
     setIsCheckingOut(true);
 
-    const locResult = await getCurrentLocation();
-    if (!locResult.success) {
+    try {
+      const locResult = await getCurrentLocation();
+      if (!locResult.success) {
+        return;
+      }
+
+      setLastCapturedLocation(locResult.location);
+
+      const res = await checkOutAttendance(locResult.location);
+
+      if (res.success) {
+        const now = new Date();
+        const rawServerCheckOut =
+          res.data?.checkOut ??
+          res.data?.checkOutTime ??
+          res.data?.data?.checkOut ??
+          res.data?.data?.checkOutTime ??
+          '';
+        const rawServerHours =
+          res.data?.hours ??
+          res.data?.workingHours ??
+          res.data?.totalHours ??
+          res.data?.data?.hours ??
+          res.data?.data?.workingHours ??
+          res.data?.data?.totalHours ??
+          '';
+        const successfulCheckOutTime = rawServerCheckOut || formatLocalTimeForState(now);
+        const serverTime = formatTime12h(successfulCheckOutTime);
+
+        setIsCheckedIn(true);
+        setIsCheckedOut(true);
+        setCheckOutTime(serverTime);
+        setAttendanceMutationGuard({
+          type: 'checkout',
+          checkOutTime: successfulCheckOutTime,
+        });
+        if (rawServerHours !== null && rawServerHours !== undefined && String(rawServerHours).trim()) {
+          setTotalHours(String(rawServerHours));
+        }
+
+        Alert.alert('Check-Out Successful!', res.message || `Checked out at ${serverTime}`);
+        await Promise.all([
+          loadTodayStatus({ silent: true }),
+          loadHistoryData(activeTab, { silent: true }),
+        ]);
+      } else if (res.requiresReason) {
+        checkoutReasonAttemptIdRef.current =
+          `checkout-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+        setReasonSubmissionError('');
+        setReasonSubmissionState(REASON_SUBMISSION_STATE.IDLE);
+        setIsReasonModalVisible(true);
+      } else {
+        if ((res.message || '').toLowerCase().includes('already checked out')) {
+          loadTodayStatus({ silent: true });
+        }
+        Alert.alert('Check-Out Failed', res.message || 'Unable to check out. Please try again.');
+      }
+    } finally {
       setIsCheckingOut(false);
-      return;
-    }
-
-    setLastCapturedLocation(locResult.location);
-
-    const res = await checkOutAttendance(locResult.location);
-    setIsCheckingOut(false);
-
-    if (res.success) {
-      const now = new Date();
-      const rawServerCheckOut =
-        res.data?.checkOut ??
-        res.data?.checkOutTime ??
-        res.data?.data?.checkOut ??
-        res.data?.data?.checkOutTime ??
-        '';
-      const rawServerHours =
-        res.data?.hours ??
-        res.data?.workingHours ??
-        res.data?.totalHours ??
-        res.data?.data?.hours ??
-        res.data?.data?.workingHours ??
-        res.data?.data?.totalHours ??
-        '';
-      const successfulCheckOutTime = rawServerCheckOut || formatLocalTimeForState(now);
-      const serverTime = formatTime12h(successfulCheckOutTime);
-
-      setIsCheckedIn(true);
-      setIsCheckedOut(true);
-      setCheckOutTime(serverTime);
-      if (rawServerHours !== null && rawServerHours !== undefined && String(rawServerHours).trim()) {
-        setTotalHours(String(rawServerHours));
-      }
-
-      Alert.alert('Check-Out Successful!', res.message || `Checked out at ${serverTime}`);
-      await Promise.all([
-        loadTodayStatus({ silent: true }),
-        loadHistoryData(activeTab, { silent: true }),
-      ]);
-    } else if (res.requiresReason) {
-      setIsReasonModalVisible(true);
-    } else {
-      if ((res.message || '').toLowerCase().includes('already checked out')) {
-        loadTodayStatus({ silent: true });
-      }
-      Alert.alert('Check-Out Failed', res.message || 'Unable to check out. Please try again.');
     }
   };
 
   const handleSubmitLocationReason = async () => {
-    if (!locationReason || locationReason.trim().length < 10) {
+    if (
+      reasonSubmissionState === REASON_SUBMISSION_STATE.UNCONFIRMED ||
+      reasonSubmissionState === REASON_SUBMISSION_STATE.VERIFYING ||
+      reasonSubmissionLockRef.current ||
+      isSubmittingReason
+    ) {
+      return;
+    }
+
+    if (isCheckedOut) {
+      setIsReasonModalVisible(false);
+      setLocationReason('');
+      setLastCapturedLocation(null);
+      setReasonSubmissionError('');
+      setReasonSubmissionState(REASON_SUBMISSION_STATE.COMPLETED);
+      checkoutReasonAttemptIdRef.current = null;
+      Alert.alert('Already Checked Out', 'Your checkout has already been recorded.');
+      return;
+    }
+
+    const trimmedReason = locationReason.trim();
+
+    if (!trimmedReason || trimmedReason.length < 10) {
       Alert.alert('Reason Too Short', 'Please provide a detailed reason (minimum 10 characters).');
       return;
     }
 
+    if (!lastCapturedLocation) {
+      Alert.alert(
+        'Location Required',
+        'Your checkout location is unavailable. Close this message and try Check Out again.'
+      );
+      return;
+    }
+
+    reasonSubmissionLockRef.current = true;
+    setReasonSubmissionState(REASON_SUBMISSION_STATE.SUBMITTING);
     setIsSubmittingReason(true);
+    setReasonSubmissionError('');
 
     const payload = {
-      ...(lastCapturedLocation || { latitude: 0, longitude: 0, accuracy: 10 }),
-      locationChangeReason: locationReason.trim(),
+      ...lastCapturedLocation,
+      locationChangeReason: trimmedReason,
     };
 
-    const res = await checkOutAttendance(payload);
-    setIsSubmittingReason(false);
+    if (__DEV__) {
+      console.log('[Attendance checkout reason]', {
+        attemptId: checkoutReasonAttemptIdRef.current,
+        phase: 'submit-start',
+      });
+    }
 
-    if (res.success) {
-      const now = new Date();
-      const rawServerCheckOut =
-        res.data?.checkOut ??
-        res.data?.checkOutTime ??
-        res.data?.data?.checkOut ??
-        res.data?.data?.checkOutTime ??
-        '';
-      const rawServerHours =
-        res.data?.hours ??
-        res.data?.workingHours ??
-        res.data?.totalHours ??
-        res.data?.data?.hours ??
-        res.data?.data?.workingHours ??
-        res.data?.data?.totalHours ??
-        '';
-      const successfulCheckOutTime = rawServerCheckOut || formatLocalTimeForState(now);
+    let shouldReleaseLock = true;
 
-      setIsCheckedIn(true);
-      setIsCheckedOut(true);
-      setCheckOutTime(formatTime12h(successfulCheckOutTime));
-      if (rawServerHours !== null && rawServerHours !== undefined && String(rawServerHours).trim()) {
-        setTotalHours(String(rawServerHours));
+    try {
+      const res = await checkOutAttendance(payload);
+
+      if (res.success) {
+        shouldReleaseLock = false;
+        await completeReasonCheckoutSuccess(
+          res.data,
+          'Your location reason and checkout were recorded.'
+        );
+        return;
       }
 
-      setIsReasonModalVisible(false);
-      setLocationReason('');
-      Alert.alert('Check-Out Submitted', 'Your location change reason and checkout have been recorded.');
-      await Promise.all([
-        loadTodayStatus({ silent: true }),
-        loadHistoryData(activeTab, { silent: true }),
-      ]);
-    } else {
+      if (res.code === 'SESSION_EXPIRED') {
+        shouldReleaseLock = false;
+        return;
+      }
+
+      const lowerMessage = String(res.message || '').toLowerCase();
+      const alreadyCheckedOut =
+        lowerMessage.includes('already checked out') ||
+        lowerMessage.includes('checkout already completed') ||
+        lowerMessage.includes('attendance already checked out');
+
+      if (alreadyCheckedOut) {
+        const reconciled = await reconcileAlreadyCheckedOut();
+        if (reconciled) {
+          shouldReleaseLock = false;
+          return;
+        }
+      }
+
+      const outcomeUnknown =
+        res.isOutcomeUnknown ||
+        res.code === 'REQUEST_TIMEOUT' ||
+        res.code === 'NETWORK_ERROR' ||
+        Number(res.status) >= 500 ||
+        lowerMessage.includes('timed out');
+
+      if (outcomeUnknown) {
+        shouldReleaseLock = false;
+        setReasonSubmissionState(REASON_SUBMISSION_STATE.VERIFYING);
+        setIsSubmittingReason(false);
+        setIsVerifyingReasonSubmission(true);
+        const verification = await verifyCheckoutRecorded();
+        setIsVerifyingReasonSubmission(false);
+
+        if (verification.confirmed) {
+          shouldReleaseLock = false;
+          await completeReasonCheckoutSuccess(
+            verification.record,
+            'Checkout was completed successfully.'
+          );
+          return;
+        }
+
+        setReasonSubmissionError(
+          'Checkout status could not be confirmed. Refresh attendance before attempting checkout again.'
+        );
+        setReasonSubmissionState(REASON_SUBMISSION_STATE.UNCONFIRMED);
+        Alert.alert(
+          'Checkout Status Unconfirmed',
+          'The server did not return a clear result. Refresh checkout status before attempting checkout again.'
+        );
+        return;
+      }
+
+      setReasonSubmissionError(res.message || 'Failed to submit location reason. Please try again.');
       Alert.alert('Submission Failed', res.message || 'Failed to submit location reason. Please try again.');
+    } finally {
+      if (shouldReleaseLock) {
+        releaseReasonSubmissionLock();
+      }
     }
   };
 
@@ -773,13 +1128,14 @@ export default function MyAttendanceScreen() {
     const outVal = formatTime12h(item.checkOut || item.checkOutTime);
     const hoursVal = item.hours || item.totalHours || '--';
     const statusVal = item.status || item.attendanceStatus || '-';
+    const statusLabel = formatAttendanceStatusLabel(statusVal);
     const badgeStyle = getStatusBadgeStyle(statusVal);
 
     return (
       <View
         style={styles.historyRow}
         accessible
-        accessibilityLabel={`${dayName}, ${dateVal}, check in ${inVal}, check out ${outVal}, hours ${hoursVal}, status ${statusVal}`}
+        accessibilityLabel={`${dayName}, ${dateVal}, check in ${inVal}, check out ${outVal}, hours ${hoursVal}, status ${statusLabel}`}
       >
         <View style={styles.historyDate}>
           <Text style={styles.historyDay} numberOfLines={1}>{dayName}</Text>
@@ -793,7 +1149,7 @@ export default function MyAttendanceScreen() {
           <Text style={styles.historyHours}>{hoursVal}</Text>
           <View style={[styles.statusBadge, { backgroundColor: badgeStyle.bg }]}>
             <Text style={[styles.statusBadgeText, { color: badgeStyle.color }]} numberOfLines={1}>
-              {statusVal}
+              {statusLabel}
             </Text>
           </View>
         </View>
@@ -813,7 +1169,9 @@ export default function MyAttendanceScreen() {
             {isCheckedIn && !isCheckedOut && (
               <Animated.View style={[styles.liveDot, { transform: [{ scale: pulseAnim }] }]} />
             )}
-            <Ionicons name={currentStatus.icon} size={15} color={currentStatus.color} />
+            {!!currentStatus.icon && (
+              <Ionicons name={currentStatus.icon} size={15} color={currentStatus.color} />
+            )}
             <Text style={[styles.currentBadgeText, { color: currentStatus.color }]}>
               {currentStatus.label}
             </Text>
@@ -990,7 +1348,13 @@ export default function MyAttendanceScreen() {
         visible={isReasonModalVisible}
         transparent
         animationType="fade"
-        onRequestClose={() => setIsReasonModalVisible(false)}
+        onRequestClose={() => {
+          if (isReasonSubmissionBusy || isReasonSubmissionUnconfirmed) {
+            return;
+          }
+
+          closeReasonModal();
+        }}
       >
         <View style={styles.modalOverlay}>
           <View style={[styles.modalCard, { width: Math.min(width - 32, 440) }]}>
@@ -1003,7 +1367,7 @@ export default function MyAttendanceScreen() {
               Your checkout location is more than 500 meters away from your check-in location. Please provide a reason for this change.
             </Text>
 
-            <TextInput
+            <AppTextInput
               style={styles.modalTextInput}
               value={locationReason}
               onChangeText={setLocationReason}
@@ -1013,39 +1377,56 @@ export default function MyAttendanceScreen() {
               numberOfLines={4}
               maxLength={500}
               textAlignVertical="top"
+              editable={!isReasonSubmissionBusy && !isReasonSubmissionUnconfirmed}
             />
             <Text style={styles.characterCountText}>
               {locationReason.length}/500 characters (min 10)
             </Text>
+            {!!reasonSubmissionError && (
+              <Text style={styles.reasonSubmissionError}>
+                {reasonSubmissionError}
+              </Text>
+            )}
 
             <View style={styles.modalActionsRow}>
               <TouchableOpacity
-                style={styles.modalCancelBtn}
-                onPress={() => {
-                  setIsReasonModalVisible(false);
-                  setLocationReason('');
-                }}
-                disabled={isSubmittingReason}
+                style={[
+                  styles.modalCancelBtn,
+                  (isReasonSubmissionBusy || isReasonSubmissionUnconfirmed) && styles.modalActionDisabled,
+                ]}
+                onPress={closeReasonModal}
+                disabled={isReasonSubmissionBusy || isReasonSubmissionUnconfirmed}
                 activeOpacity={0.7}
                 accessibilityRole="button"
                 accessibilityLabel="Cancel location reason"
+                accessibilityState={{ disabled: isReasonSubmissionBusy || isReasonSubmissionUnconfirmed }}
               >
                 <Text style={styles.modalCancelText}>Cancel</Text>
               </TouchableOpacity>
 
               <TouchableOpacity
-                style={styles.modalSubmitBtn}
-                onPress={handleSubmitLocationReason}
-                disabled={isSubmittingReason}
+                style={[
+                  styles.modalSubmitBtn,
+                  isReasonSubmissionBusy && styles.modalActionDisabled,
+                ]}
+                onPress={isReasonSubmissionUnconfirmed ? handleVerifyUnconfirmedCheckout : handleSubmitLocationReason}
+                disabled={isReasonSubmissionBusy}
                 activeOpacity={0.85}
                 accessibilityRole="button"
-                accessibilityLabel="Submit location reason"
-                accessibilityState={{ disabled: isSubmittingReason }}
+                accessibilityLabel={isReasonSubmissionUnconfirmed ? 'Refresh checkout status' : 'Submit location reason'}
+                accessibilityState={{ disabled: isReasonSubmissionBusy, busy: isReasonSubmissionBusy }}
               >
-                {isSubmittingReason ? (
+                {isReasonSubmissionBusy ? (
                   <ActivityIndicator color={colors.white} size="small" />
                 ) : (
-                  <Text style={styles.modalSubmitText}>Submit Reason</Text>
+                  <Text style={styles.modalSubmitText}>
+                    {isReasonSubmissionUnconfirmed ? 'Refresh Checkout Status' : 'Submit Reason'}
+                  </Text>
+                )}
+                {isReasonSubmissionBusy && (
+                  <Text style={styles.modalSubmitText}>
+                    {isVerifyingReasonSubmission ? 'Verifying checkout...' : 'Submitting...'}
+                  </Text>
                 )}
               </TouchableOpacity>
             </View>
@@ -1484,8 +1865,15 @@ const styles = StyleSheet.create({
     fontSize: fontSizes.sm,
     color: colors.placeholder,
     textAlign: 'right',
-    marginBottom: 20,
+    marginBottom: spacing.md,
     fontWeight: fontWeights.medium,
+  },
+  reasonSubmissionError: {
+    color: colors.warning,
+    fontSize: fontSizes.sm,
+    fontWeight: fontWeights.semibold,
+    lineHeight: 17,
+    marginBottom: spacing.lg,
   },
   modalActionsRow: {
     flexDirection: 'row',
@@ -1504,10 +1892,17 @@ const styles = StyleSheet.create({
     color: colors.textSecondary,
   },
   modalSubmitBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.sm,
     paddingHorizontal: 20,
     paddingVertical: spacing.lg,
     borderRadius: radii.lg,
     backgroundColor: colors.primary,
+  },
+  modalActionDisabled: {
+    opacity: 0.7,
   },
   modalSubmitText: {
     fontSize: fontSizes.body,
@@ -1515,4 +1910,3 @@ const styles = StyleSheet.create({
     color: colors.white,
   },
 });
-

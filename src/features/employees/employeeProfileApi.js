@@ -219,16 +219,15 @@ export function getDocumentChecklist(employeeId, token, options = {}) {
   return apiClient.get(ENDPOINTS.documentChecklist(employeeId), { ...options, token });
 }
 
-export function uploadEmployeeDocument({ employeeId, documentType, category, file }, token) {
+export function uploadEmployeeDocument({ employeeId, documentType, file }, token) {
   assertId(employeeId, 'Employee ID');
   const formData = new FormData();
   formData.append('EmployeeId', String(employeeId));
   formData.append('DocumentType', documentType);
-  formData.append('Category', category || 'Documents');
-  formData.append('File', {
+  formData.append('Files', {
     uri: file.uri,
     name: file.name,
-    type: file.mimeType || 'application/octet-stream',
+    type: file.mimeType || file.type || 'application/octet-stream',
   });
   return uploadForm(ENDPOINTS.documentsUpload, formData, token);
 }

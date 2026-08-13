@@ -4,6 +4,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ROUTES, VISIBLE_TAB_ROUTES } from '../../app/navigation/routeNames';
+import { useKeyboardTabBarGuard } from '../keyboard/KeyboardTabBarGuard';
 import { colors, fontSizes, fontWeights, radii, shadows, sizes, spacing } from '../../theme';
 
 const TAB_ICONS = {
@@ -15,8 +16,14 @@ const TAB_ICONS = {
 
 export default function FloatingTabBar({ state, descriptors, navigation }) {
   const insets = useSafeAreaInsets();
+  const { shouldHideFloatingTabBar } = useKeyboardTabBarGuard();
+
   const activeRouteName = state.routes[state.index]?.name;
   const visibleRoutes = state.routes.filter((route) => VISIBLE_TAB_ROUTES.includes(route.name));
+
+  if (shouldHideFloatingTabBar) {
+    return null;
+  }
 
   return (
     <View

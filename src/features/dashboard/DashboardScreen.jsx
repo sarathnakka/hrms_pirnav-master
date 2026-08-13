@@ -230,13 +230,20 @@ export default function DashboardScreen({ navigation }) {
       if (item === 'heading') {
         return (
           <View style={styles.heading} accessible accessibilityRole="header">
-            <Text style={styles.title}>Employee Dashboard</Text>
-            <View style={styles.subtitleRow}>
-              <Text style={styles.subtitle}>
-                Track attendance, celebrate milestones, and stay updated with today's work.
-              </Text>
+            <Text
+              style={styles.title}
+              numberOfLines={1}
+              adjustsFontSizeToFit
+              minimumFontScale={0.9}
+            >
+              Employee Dashboard
+            </Text>
+            <View style={styles.overviewRow}>
               <OverviewChip />
             </View>
+            <Text style={styles.subtitle}>
+              Track attendance, celebrate milestones, and stay updated with today's work.
+            </Text>
           </View>
         );
       }
@@ -295,7 +302,12 @@ export default function DashboardScreen({ navigation }) {
       }
 
       if (item === 'holidays') {
-        return <HolidaysCard holidays={upcomingHolidays} />;
+        return (
+          <HolidaysCard
+            holidays={upcomingHolidays}
+            onViewAll={() => navigation.navigate(ROUTES.MY_HOLIDAYS)}
+          />
+        );
       }
 
       if (item === 'actions') {
@@ -313,6 +325,7 @@ export default function DashboardScreen({ navigation }) {
       errors,
       loadDashboard,
       loading,
+      navigation,
       quickActions,
       recentActivities,
       upcomingHolidays,
@@ -369,22 +382,24 @@ const styles = StyleSheet.create({
     alignSelf: 'center',
   },
   heading: {
-    gap: spacing.md,
+    gap: spacing.sm,
+  },
+  overviewRow: {
+    width: '100%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-front',
   },
   title: {
+    width: '100%',
+    flexShrink: 1,
     color: colors.textPrimary,
     fontSize: fontSizes.dashboardTitle,
     lineHeight: 29,
     fontWeight: fontWeights.extraBold,
     letterSpacing: 0,
   },
-  subtitleRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: spacing.md,
-  },
   subtitle: {
-    flex: 1,
     color: colors.textSecondary,
     fontSize: fontSizes.base,
     lineHeight: 19,

@@ -9,7 +9,6 @@ import {
   RefreshControl,
   StyleSheet,
   Text,
-  TextInput,
   TouchableOpacity,
   View,
   useWindowDimensions,
@@ -18,6 +17,7 @@ import DateTimePicker from '@react-native-community/datetimepicker';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import AppTextInput from '../../shared/components/AppTextInput';
 import { useAuth } from '../auth/AuthContext';
 import { colors, fontSizes, fontWeights, radii, shadows, sizes, spacing } from '../../theme';
 import {
@@ -460,7 +460,7 @@ export default function EmployeeLeavesScreen() {
       {renderPicker()}
 
       <Text style={styles.fieldLabel}>Reason</Text>
-      <TextInput
+      <AppTextInput
         style={styles.reasonInput}
         value={form.reason}
         onChangeText={(value) => updateForm('reason', value)}
@@ -608,6 +608,7 @@ export default function EmployeeLeavesScreen() {
           { paddingBottom: sizes.floatingTabHeight + insets.bottom + spacing.xxxl * 3 },
         ]}
         keyboardShouldPersistTaps="handled"
+        keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
         showsVerticalScrollIndicator={false}
       />
 

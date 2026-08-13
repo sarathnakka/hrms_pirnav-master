@@ -24,7 +24,9 @@ function toResult(promise, fallbackMessage) {
       success: false,
       message: error.message || fallbackMessage,
       status: error.status,
+      code: error.code,
       data: error.data,
+      isOutcomeUnknown: Boolean(error.isOutcomeUnknown),
     }));
 }
 

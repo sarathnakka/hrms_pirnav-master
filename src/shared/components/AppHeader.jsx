@@ -4,28 +4,32 @@ import { DrawerActions } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { useAuth } from '../../features/auth/AuthContext';
 import { ROUTES } from '../../app/navigation/routeNames';
 import { colors, fontSizes, fontWeights, shadows, sizes, spacing } from '../../theme';
 
 const iconLogo = require('../../../assets/iconlogo.png');
 
-function getGreeting() {
-  const hour = new Date().getHours();
-  if (hour < 12) return 'Good Morning';
-  if (hour < 17) return 'Good Afternoon';
-  return 'Good Evening';
-}
+function getGreetingMeta(date = new Date()) {
+  const hour = date.getHours();
 
-function getDisplayName(user = {}) {
-  return (
-    user?.employeeName ||
-    user?.name ||
-    user?.fullName ||
-    `${user?.firstName || ''} ${user?.lastName || ''}`.trim() ||
-    user?.email ||
-    ''
-  );
+  if (hour < 12) {
+    return {
+      text: 'Good Morning',
+      icon: 'sunny-outline',
+    };
+  }
+
+  if (hour < 18) {
+    return {
+      text: 'Good Afternoon',
+      icon: 'partly-sunny-outline',
+    };
+  }
+
+  return {
+    text: 'Good Evening',
+    icon: 'moon-outline',
+  };
 }
 
 function navigateToNotifications(navigation) {
@@ -49,13 +53,8 @@ export default function AppHeader({
   showBackButton = false,
   showNotificationButton = true,
 }) {
-  const { user } = useAuth();
-  const displayName = getDisplayName(user);
-  const firstName = displayName.split(/\s+/)[0] || '';
-  const headerTitle =
-    title === 'Dashboard'
-      ? `${getGreeting()}${firstName ? `, ${firstName}` : ''}`
-      : title;
+  const isDashboardHeader = title === 'Dashboard';
+  const greetingMeta = getGreetingMeta();
 
   const openDrawer = () => {
     if (showBackButton && navigation.canGoBack?.()) {
@@ -90,9 +89,29 @@ export default function AppHeader({
           accessibilityLabel="PIRNAV logo"
         />
 
-        <Text style={styles.title} numberOfLines={1}>
-          {headerTitle}
-        </Text>
+        {isDashboardHeader ? (
+          <View
+            style={styles.greetingRow}
+            accessible
+            accessibilityRole="text"
+            accessibilityLabel={greetingMeta.text}
+          >
+            <Ionicons
+              name={greetingMeta.icon}
+              size={18}
+              color={colors.primary}
+              accessible={false}
+              importantForAccessibility="no"
+            />
+            <Text style={styles.title} numberOfLines={1}>
+              {greetingMeta.text}
+            </Text>
+          </View>
+        ) : (
+          <Text style={styles.title} numberOfLines={1}>
+            {title}
+          </Text>
+        )}
 
         {showNotificationButton && (
           <TouchableOpacity
@@ -140,6 +159,13 @@ const styles = StyleSheet.create({
     fontSize: fontSizes.body,
     fontWeight: fontWeights.extraBold,
     textAlign: 'left',
+  },
+  greetingRow: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
   },
   logo: {
     width: sizes.headerLogoWidth,

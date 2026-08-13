@@ -533,12 +533,15 @@ export function ActivityCard({ activities, error, onRetry }) {
   );
 }
 
-export function HolidaysCard({ holidays }) {
+export function HolidaysCard({ holidays, onViewAll }) {
   return (
     <SectionCard style={styles.infoPanel}>
-      <View style={styles.infoHeader}>
-        <Text style={styles.sectionTitle}>Upcoming Holidays</Text>
-      </View>
+      <CardHeader
+        title="Upcoming Holidays"
+        actionLabel="View All"
+        actionIcon="chevron-forward"
+        onAction={onViewAll}
+      />
       {holidays.length === 0 ? (
         <SectionState icon="calendar-outline" title="No upcoming holidays" message="Holiday information will show here when the dashboard API returns it." />
       ) : (
@@ -589,29 +592,29 @@ export function QuickActions({ actions }) {
 function CardHeader({ title, description, chipLabel, chipIcon, actionLabel, actionIcon, onAction, actionDisabled }) {
   return (
     <View style={styles.cardHeader}>
-      <View style={styles.cardHeaderCopy}>
-        <Text style={styles.sectionTitle}>{title}</Text>
-        {!!description && <Text style={styles.sectionDescription}>{description}</Text>}
+      <View style={styles.cardHeaderTopRow}>
+        <Text style={[styles.sectionTitle, styles.cardHeaderTitle]} numberOfLines={2}>{title}</Text>
+        {!!chipLabel && (
+          <View style={styles.cardChip}>
+            <Ionicons name={chipIcon} size={14} color={colors.primary} />
+            <Text style={styles.cardChipText}>{chipLabel}</Text>
+          </View>
+        )}
+        {!!actionLabel && (
+          <Pressable
+            style={[styles.viewAllButton, actionDisabled && styles.disabledAction]}
+            onPress={onAction}
+            disabled={actionDisabled}
+            accessibilityRole="button"
+            accessibilityLabel={actionLabel}
+            accessibilityState={{ disabled: actionDisabled }}
+          >
+            <Text style={styles.viewAllText}>{actionLabel}</Text>
+            {!!actionIcon && <Ionicons name={actionIcon} size={15} color={colors.textPrimary} />}
+          </Pressable>
+        )}
       </View>
-      {!!chipLabel && (
-        <View style={styles.cardChip}>
-          <Ionicons name={chipIcon} size={14} color={colors.primary} />
-          <Text style={styles.cardChipText}>{chipLabel}</Text>
-        </View>
-      )}
-      {!!actionLabel && (
-        <Pressable
-          style={[styles.viewAllButton, actionDisabled && styles.disabledAction]}
-          onPress={onAction}
-          disabled={actionDisabled}
-          accessibilityRole="button"
-          accessibilityLabel={actionLabel}
-          accessibilityState={{ disabled: actionDisabled }}
-        >
-          <Text style={styles.viewAllText}>{actionLabel}</Text>
-          <Ionicons name={actionIcon} size={15} color={colors.textPrimary} />
-        </Pressable>
-      )}
+      {!!description && <Text style={styles.sectionDescription}>{description}</Text>}
     </View>
   );
 }
@@ -718,26 +721,30 @@ const styles = StyleSheet.create({
     marginBottom: spacing.md,
   },
   cardHeader: {
+    marginBottom: spacing.xxl,
+  },
+  cardHeaderTopRow: {
     flexDirection: 'row',
     alignItems: 'flex-start',
     justifyContent: 'space-between',
-    gap: spacing.lg,
-    marginBottom: spacing.xxl,
-  },
-  cardHeaderCopy: {
-    flex: 1,
-    gap: spacing.xs,
+    flexWrap: 'wrap',
+    gap: spacing.md,
   },
   sectionTitle: {
     color: colors.textPrimary,
     fontSize: fontSizes.dashboardSectionTitle,
     fontWeight: fontWeights.extraBold,
   },
+  cardHeaderTitle: {
+    flex: 1,
+    minWidth: 0,
+  },
   sectionDescription: {
     color: colors.textSecondary,
     fontSize: fontSizes.base,
     lineHeight: 19,
     fontWeight: fontWeights.medium,
+    marginTop: spacing.sm,
   },
   cardChip: {
     minHeight: 30,

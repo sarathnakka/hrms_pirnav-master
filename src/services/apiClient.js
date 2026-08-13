@@ -123,11 +123,21 @@ async function request(
     return data;
   } catch (error) {
     if (error.name === 'AbortError') {
-      throw new Error('Request timed out. Please check your connection and try again.');
+      const timeoutError = new Error(
+        'Request timed out before a server response was received.'
+      );
+      timeoutError.code = 'REQUEST_TIMEOUT';
+      timeoutError.isOutcomeUnknown = method !== 'GET';
+      throw timeoutError;
     }
 
     if (!error.status && error.message === 'Network request failed') {
-      throw new Error('Network error. Please check your internet connection.');
+      const networkError = new Error(
+        'Network connection was lost before a server response was received.'
+      );
+      networkError.code = 'NETWORK_ERROR';
+      networkError.isOutcomeUnknown = method !== 'GET';
+      throw networkError;
     }
 
     throw error;

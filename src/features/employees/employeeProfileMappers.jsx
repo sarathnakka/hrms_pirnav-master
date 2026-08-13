@@ -364,6 +364,12 @@ export function formatFileSize(size) {
   return `${Math.round((value / (1024 * 1024)) * 10) / 10} MB`;
 }
 
+export function formatFileSizeMB(size) {
+  const value = Number(size);
+  if (!Number.isFinite(value) || value <= 0) return '-';
+  return `${Math.round(value * 100) / 100} MB`;
+}
+
 export function normalizeDocument(item = {}) {
   const id = item.id || item.documentId || item.employeeDocumentId || item.document_Id;
   return {
@@ -371,13 +377,38 @@ export function normalizeDocument(item = {}) {
     documentType: text(item.documentType || item.DocumentType || item.type || item.name, 'Document'),
     category: text(item.category || item.Category),
     fileName: text(item.fileName || item.FileName || item.originalFileName || item.name, 'Document'),
+    fileType: text(item.fileType || item.FileType),
+    fileSizeMB: Number(item.fileSizeMB || item.FileSizeMB || item.file_Size_MB || 0) || 0,
     size: Number(item.size || item.fileSize || item.FileSize || 0),
     uploadedAt: text(item.uploadedAt || item.createdAt || item.uploadedDate || item.UploadedDate),
+    uploadedDate: text(item.uploadedDate || item.UploadedDate || item.uploadedAt || item.createdAt),
+    verificationStatus: text(item.verificationStatus || item.VerificationStatus || item.status, 'Pending'),
   };
 }
 
 export function normalizeDocuments(payload) {
   return collection(unwrap(payload)).map(normalizeDocument).filter((item) => item.id);
+}
+
+function booleanValue(value) {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value === 1;
+  const normalized = text(value).toLowerCase();
+  return ['true', '1', 'yes', 'uploaded'].includes(normalized);
+}
+
+export function normalizeChecklistItem(item = {}) {
+  return {
+    documentType: text(item.documentType || item.DocumentType),
+    uploaded: booleanValue(item.uploaded ?? item.Uploaded),
+    status: text(item.status || item.Status),
+  };
+}
+
+export function normalizeDocumentChecklist(payload) {
+  return collection(unwrap(payload))
+    .map(normalizeChecklistItem)
+    .filter((item) => item.documentType);
 }
 
 export function normalizeAgreements(payload) {

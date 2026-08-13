@@ -13,6 +13,7 @@ import TeamDetailsScreen from '../../features/teams/TeamDetailsScreen';
 import TeamsScreen from '../../features/teams/TeamsScreen';
 import AppHeader from '../../shared/components/AppHeader';
 import FloatingTabBar from '../../shared/components/FloatingTabBar';
+import { KeyboardTabBarProvider } from '../../shared/keyboard/KeyboardTabBarGuard';
 import { colors } from '../../theme';
 import { ROUTES } from './routeNames';
 
@@ -56,86 +57,89 @@ function TeamsFlowNavigator() {
 
 export default function AppTabNavigator() {
   return (
-    <Tab.Navigator
-      tabBar={(props) => <FloatingTabBar {...props} />}
-      screenOptions={({ navigation, route }) => ({
-        header: () => <AppHeader navigation={navigation} title={getTabTitle(route.name)} />,
-        sceneStyle: { backgroundColor: colors.navigation.screenBackground },
-      })}
-    >
-      <Tab.Screen
-        name={ROUTES.DASHBOARD}
-        component={DashboardScreen}
-        options={{
-          title: 'Dashboard',
-          tabBarLabel: 'Dashboard',
-          tabBarAccessibilityLabel: 'Dashboard tab',
-        }}
-      />
-      <Tab.Screen
-        name={ROUTES.MY_ATTENDANCE}
-        component={MyAttendanceScreen}
-        options={{
-          title: 'My Attendance',
-          tabBarLabel: 'Attendance',
-          tabBarAccessibilityLabel: 'My Attendance tab',
-        }}
-      />
-      <Tab.Screen
-        name={ROUTES.EMPLOYEE_LEAVES}
-        component={EmployeeLeavesScreen}
-        options={{
-          title: 'Employee Leaves',
-          tabBarLabel: 'Leaves',
-          tabBarAccessibilityLabel: 'Employee Leaves tab',
-        }}
-      />
-      <Tab.Screen
-        name={ROUTES.PROFILE}
-        component={ProfileScreen}
-        options={{
-          title: 'Profile',
-          tabBarLabel: 'Profile',
-          tabBarAccessibilityLabel: 'Profile tab',
-        }}
-      />
-      <Tab.Screen
-        name={ROUTES.EDIT_EMPLOYEE}
-        component={EditEmployeeScreen}
-        options={{
-          title: 'Edit Employee',
-          tabBarLabel: 'Edit Employee',
-          tabBarButton: () => null,
-        }}
-      />
-      <Tab.Screen
-        name={ROUTES.MY_HOLIDAYS}
-        component={MyHolidaysScreen}
-        options={{
-          title: 'My Holidays',
-          tabBarLabel: 'My Holidays',
-          tabBarButton: () => null,
-        }}
-      />
-      <Tab.Screen
-        name={ROUTES.PAYSLIP}
-        component={PayslipScreen}
-        options={{
-          title: 'Payslip',
-          tabBarLabel: 'Payslip',
-          tabBarButton: () => null,
-        }}
-      />
-      <Tab.Screen
-        name={ROUTES.TEAMS_FLOW}
-        component={TeamsFlowNavigator}
-        options={{
-          title: 'Teams',
-          tabBarLabel: 'Teams',
-          headerShown: false,
-          tabBarButton: () => null,
-        }}
-      />
-    </Tab.Navigator>
+    <KeyboardTabBarProvider>
+      <Tab.Navigator
+        tabBar={(props) => <FloatingTabBar {...props} />}
+        screenOptions={({ navigation, route }) => ({
+          header: () => <AppHeader navigation={navigation} title={getTabTitle(route.name)} />,
+          sceneStyle: { backgroundColor: colors.navigation.screenBackground },
+          tabBarHideOnKeyboard: true,
+        })}
+      >
+        <Tab.Screen
+          name={ROUTES.DASHBOARD}
+          component={DashboardScreen}
+          options={{
+            title: 'Dashboard',
+            tabBarLabel: 'Dashboard',
+            tabBarAccessibilityLabel: 'Dashboard tab',
+          }}
+        />
+        <Tab.Screen
+          name={ROUTES.MY_ATTENDANCE}
+          component={MyAttendanceScreen}
+          options={{
+            title: 'My Attendance',
+            tabBarLabel: 'Attendance',
+            tabBarAccessibilityLabel: 'My Attendance tab',
+          }}
+        />
+        <Tab.Screen
+          name={ROUTES.EMPLOYEE_LEAVES}
+          component={EmployeeLeavesScreen}
+          options={{
+            title: 'Employee Leaves',
+            tabBarLabel: 'Leaves',
+            tabBarAccessibilityLabel: 'Employee Leaves tab',
+          }}
+        />
+        <Tab.Screen
+          name={ROUTES.PROFILE}
+          component={ProfileScreen}
+          options={{
+            title: 'Profile',
+            tabBarLabel: 'Profile',
+            tabBarAccessibilityLabel: 'Profile tab',
+          }}
+        />
+        <Tab.Screen
+          name={ROUTES.EDIT_EMPLOYEE}
+          component={EditEmployeeScreen}
+          options={{
+            title: 'Edit Employee',
+            tabBarLabel: 'Edit Employee',
+            tabBarButton: () => null,
+          }}
+        />
+        <Tab.Screen
+          name={ROUTES.MY_HOLIDAYS}
+          component={MyHolidaysScreen}
+          options={{
+            title: 'My Holidays',
+            tabBarLabel: 'My Holidays',
+            tabBarButton: () => null,
+          }}
+        />
+        <Tab.Screen
+          name={ROUTES.PAYSLIP}
+          component={PayslipScreen}
+          options={{
+            title: 'Payslip',
+            tabBarLabel: 'Payslip',
+            tabBarButton: () => null,
+          }}
+        />
+        <Tab.Screen
+          name={ROUTES.TEAMS_FLOW}
+          component={TeamsFlowNavigator}
+          options={{
+            title: 'Teams',
+            tabBarLabel: 'Teams',
+            headerShown: false,
+            tabBarButton: () => null,
+          }}
+        />
+      </Tab.Navigator>
+    </KeyboardTabBarProvider>
   );
 }

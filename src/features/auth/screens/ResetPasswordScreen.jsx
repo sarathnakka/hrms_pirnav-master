@@ -23,6 +23,7 @@ import { colors } from '../../../theme';
 import PasswordStrengthMeter from '../components/PasswordStrengthMeter';
 
 import { resetPassword } from '../authApi';
+import { clearRememberedCredentialsForEmail } from '../authStorage';
 
 export default function ResetPasswordScreen({ route, navigation }) {
   const { width } = useWindowDimensions();
@@ -81,6 +82,8 @@ export default function ResetPasswordScreen({ route, navigation }) {
     setIsLoading(false);
 
     if (result.success) {
+      clearRememberedCredentialsForEmail(email).catch(() => {});
+
       Alert.alert(
         'Password Reset Successful!',
         result.message || 'Your password has been updated. Please sign in with your new credentials.',

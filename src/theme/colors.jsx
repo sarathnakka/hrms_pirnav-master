@@ -21,7 +21,7 @@ export const colors = {
   indigo: '#6366F1',
   white: '#FFFFFF',
   black: '#000000',
-  statusBar: '#F4FAFA',
+  statusBar: '#FFFFFF',
   authStatusBar: '#0F172A',
   inputBackground: '#FAFCFC',
   inputBorder: '#D8ECEC',

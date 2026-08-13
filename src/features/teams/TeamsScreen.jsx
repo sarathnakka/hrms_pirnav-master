@@ -4,7 +4,6 @@ import {
   RefreshControl,
   StyleSheet,
   Text,
-  TextInput,
   TouchableOpacity,
   View,
   useWindowDimensions,
@@ -13,6 +12,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ROUTES } from '../../app/navigation/routeNames';
+import AppTextInput from '../../shared/components/AppTextInput';
 import { useAuth } from '../auth/AuthContext';
 import { colors, fontSizes, fontWeights, lineHeights, radii, shadows, sizes, spacing } from '../../theme';
 import { TeamCard, TeamsState } from './TeamsComponents';
@@ -110,7 +110,7 @@ export default function TeamsScreen({ navigation }) {
 
       <View style={styles.searchWrap}>
         <Ionicons name="search" size={20} color={colors.textSecondary} />
-        <TextInput
+        <AppTextInput
           style={styles.searchInput}
           value={search}
           onChangeText={setSearch}
