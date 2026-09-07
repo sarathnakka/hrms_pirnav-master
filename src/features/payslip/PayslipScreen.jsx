@@ -21,6 +21,7 @@ import { useAuth } from '../auth/AuthContext';
 import { colors, fontSizes, fontWeights, radii, shadows, sizes, spacing } from '../../theme';
 import {
   downloadPayslip,
+  getPayslipFileEndpoint,
   getMyPayslips,
   getPayslipPreview,
 } from './payslipApi';
@@ -175,6 +176,7 @@ export default function PayslipScreen() {
   const { width } = useWindowDimensions();
   const mountedRef = useRef(true);
   const controllerRef = useRef(null);
+  const fileActionLockRef = useRef(false);
 
   const [payslips, setPayslips] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -269,35 +271,125 @@ export default function PayslipScreen() {
   };
 
   const handleFileAction = async (payslip, type) => {
-    if (payslip?.id === undefined || payslip?.id === null) {
+    const payslipId = payslip?.id;
+    const monthLabel = payslip?.monthLabel || 'Payslip';
+
+    if (payslipId === undefined || payslipId === null) {
       Alert.alert('Unavailable', 'This payslip document is not available yet.');
       return;
     }
-    if (fileAction.type) return;
 
-    const actionKey = { type, id: payslip.id };
-    setFileAction(actionKey);
+    if (fileActionLockRef.current) {
+      return;
+    }
+
+    fileActionLockRef.current = true;
+    setFileAction({ type, id: payslipId });
 
     try {
+      const endpoint = getPayslipFileEndpoint(payslipId, type);
       const filename = getFileName(payslip);
-      if (type === 'preview') {
-        const file = await getPayslipPreview(payslip.id, token, { filename });
-        await openPayslipFile(file);
-      } else {
-        const file = await downloadPayslip(payslip.id, token, { filename });
-        await shareOrSavePayslipFile(file);
-        Alert.alert('Payslip downloaded', 'Payslip downloaded and ready to save or share.');
+
+      if (__DEV__) {
+        console.log('[Payslip Action]', {
+          type,
+          payslipId,
+          monthLabel,
+          endpoint,
+        });
       }
+
+      if (type === 'preview') {
+        const file = await getPayslipPreview(payslipId, token, { filename });
+        await openPayslipFile(file);
+        return;
+      }
+
+      if (type === 'download') {
+        const file = await downloadPayslip(payslipId, token, { filename });
+        const fileInfo = await FileSystem.getInfoAsync(file.uri);
+        if (!fileInfo.exists || !fileInfo.size) {
+          throw new Error('Downloaded payslip file is empty.');
+        }
+        await shareOrSavePayslipFile(file);
+        Alert.alert('Payslip downloaded', `${monthLabel} payslip is ready to save or share.`);
+        return;
+      }
+
+      throw new Error('Unsupported payslip action.');
     } catch (requestError) {
+      if (__DEV__) {
+        console.warn('[Payslip Download Error]', {
+          type,
+          payslipId,
+          monthLabel,
+          message: requestError?.message,
+          status: requestError?.status,
+          code: requestError?.code,
+        });
+      }
+
+      if (requestError?.code === 'SESSION_EXPIRED') {
+        return;
+      }
+
       Alert.alert(
         type === 'preview' ? 'Unable to open payslip' : 'Unable to download payslip',
-        requestError.message || 'Please try again.'
+        requestError?.message || 'Please try again.'
       );
     } finally {
-      setFileAction({ type: '', id: null });
+      fileActionLockRef.current = false;
+      if (mountedRef.current) {
+        setFileAction({ type: '', id: null });
+      }
     }
   };
 
+  const renderActionButton = (payslip, type, label, icon, variant = 'secondary', compact = false) => {
+    const hasPayslipId = payslip?.id !== undefined && payslip?.id !== null && String(payslip.id).trim() !== '';
+    const hasActiveFileAction = Boolean(fileAction.type);
+    const isThisActionLoading =
+      fileAction.type === type &&
+      String(fileAction.id) === String(payslip?.id);
+    const blockedByAnotherAction = hasActiveFileAction && !isThisActionLoading;
+    const disabled = !hasPayslipId || isThisActionLoading || blockedByAnotherAction;
+    const isPrimary = variant === 'primary';
+    const iconColor = isPrimary ? colors.payslip.downloadText : colors.payslip.previewText;
+
+    return (
+      <TouchableOpacity
+        style={[
+          styles.fileButton,
+          compact && styles.fileButtonCompact,
+          isPrimary ? styles.downloadButton : styles.previewButton,
+          !hasPayslipId && styles.fileButtonDisabled,
+          isThisActionLoading && styles.fileButtonLoading,
+          isNarrow && !compact && styles.fileButtonStacked,
+        ]}
+        onPress={() => handleFileAction(payslip, type)}
+        disabled={disabled}
+        activeOpacity={0.82}
+        accessibilityRole="button"
+        accessibilityLabel={`${label} for ${payslip?.monthLabel || 'payslip'}`}
+        accessibilityState={{ disabled, busy: isThisActionLoading }}
+      >
+        {isThisActionLoading ? (
+          <ActivityIndicator size="small" color={iconColor} />
+        ) : (
+          <Ionicons
+            name={icon}
+            size={17}
+            color={iconColor}
+          />
+        )}
+        {!compact && (
+          <Text style={[styles.fileButtonText, isPrimary ? styles.downloadButtonText : styles.previewButtonText]} numberOfLines={1}>
+            {label}
+          </Text>
+        )}
+      </TouchableOpacity>
+    );
+  };
   const renderMetric = (label, value, icon, tone, backgroundColor, style) => (
     <View
       style={[styles.metricTile, { backgroundColor }, style]}
@@ -315,47 +407,6 @@ export default function PayslipScreen() {
       </Text>
     </View>
   );
-
-  const renderActionButton = (payslip, type, label, icon, variant = 'secondary', compact = false) => {
-    const isLoading = fileAction.type === type && fileAction.id === payslip?.id;
-    const disabled = !payslip?.id || Boolean(fileAction.type);
-    const isPrimary = variant === 'primary';
-
-    return (
-      <TouchableOpacity
-        style={[
-          styles.fileButton,
-          compact && styles.fileButtonCompact,
-          isPrimary ? styles.downloadButton : styles.previewButton,
-          disabled && styles.fileButtonDisabled,
-          isNarrow && !compact && styles.fileButtonStacked,
-        ]}
-        onPress={() => handleFileAction(payslip, type)}
-        disabled={disabled}
-        activeOpacity={0.82}
-        accessibilityRole="button"
-        accessibilityLabel={`${label} for ${payslip?.monthLabel || 'payslip'}`}
-        accessibilityState={{ disabled, busy: isLoading }}
-      >
-        {isLoading ? (
-          <ActivityIndicator size="small" color={isPrimary ? colors.payslip.downloadText : colors.payslip.previewText} />
-        ) : (
-          <>
-            <Ionicons
-              name={icon}
-              size={17}
-              color={isPrimary ? colors.payslip.downloadText : colors.payslip.previewText}
-            />
-            {!compact && (
-              <Text style={[styles.fileButtonText, isPrimary ? styles.downloadButtonText : styles.previewButtonText]} numberOfLines={1}>
-                {label}
-              </Text>
-            )}
-          </>
-        )}
-      </TouchableOpacity>
-    );
-  };
 
   const renderCurrentPayslip = () => {
     if (!currentPayslip || loading) return null;
@@ -679,6 +730,9 @@ const styles = StyleSheet.create({
   },
   fileButtonDisabled: {
     opacity: 0.55,
+  },
+  fileButtonLoading: {
+    opacity: 0.82,
   },
   fileButtonText: {
     flexShrink: 1,

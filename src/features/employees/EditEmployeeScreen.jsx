@@ -47,6 +47,8 @@ import {
   formatFileSizeMB,
   maskLastFour,
   maskPan,
+  isAgreementSignedStatus,
+  mergeAgreementsWithLifecycle,
   normalizeAgreements,
   normalizeDocumentChecklist,
   normalizeDepartments,
@@ -58,10 +60,12 @@ import {
   downloadEmployeeDocument,
   downloadSignedAgreementDocument,
   getDepartments,
+  getAgreementTemplates,
   getDocumentChecklist,
   getEmployeeDocuments,
-  getMyAgreements,
   getMyEmployeeDetails,
+  getPendingAgreements,
+  getSignedAgreements,
   saveBankInfo,
   saveEducationCollection,
   saveExperienceCollection,
@@ -137,6 +141,36 @@ function delay(ms) {
 function valueText(value) {
   if (value === null || value === undefined || value === '') return '-';
   return String(value);
+}
+
+function agreementText(value, fallback = '-') {
+  const normalized = String(value ?? '').trim();
+  return normalized || fallback;
+}
+
+function getAgreementDisplayId(agreement = {}) {
+  return (
+    agreement.agreementId ||
+    agreement.employeeAgreementId ||
+    agreement.pendingEmployeeAgreementId ||
+    agreement.signedEmployeeAgreementId ||
+    agreement.documentId ||
+    agreement.agreementCode ||
+    agreement.id ||
+    ''
+  );
+}
+
+function getAgreementFileName(agreement = {}, signed = false) {
+  const base = String(agreement.agreementName || agreement.agreementCode || 'Agreement')
+    .replace(/[/\\?%*:|"<>]/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return `${signed ? 'Signed-' : ''}${base || 'Agreement'}.pdf`;
+}
+
+function isAgreementSigned(agreement = {}) {
+  return Boolean(agreement?.signedEmployeeAgreementId || isAgreementSignedStatus(agreement?.status));
 }
 
 function firstError(errors) {
@@ -282,6 +316,7 @@ function normalizeSelectionOptions(options) {
       value: option.value ?? option.id ?? option.label,
       group: option.group,
       helper: option.helper,
+      disabled: option.disabled,
     };
   }).filter((option) => option.label && option.value !== undefined && option.value !== null);
 }
@@ -533,6 +568,12 @@ export default function EditEmployeeScreen({ navigation }) {
   const [documents, setDocuments] = useState([]);
   const [documentChecklist, setDocumentChecklist] = useState([]);
   const [agreements, setAgreements] = useState([]);
+  const [agreementTemplates, setAgreementTemplates] = useState([]);
+  const [pendingAgreements, setPendingAgreements] = useState([]);
+  const [signedAgreements, setSignedAgreements] = useState([]);
+  const [selectedAgreement, setSelectedAgreement] = useState(null);
+  const [pendingAgreementCount, setPendingAgreementCount] = useState(0);
+  const [signedAgreementCount, setSignedAgreementCount] = useState(0);
   const [documentType, setDocumentType] = useState('');
   const [selectedFile, setSelectedFile] = useState(null);
   const [agreementForm, setAgreementForm] = useState({ agreementId: '', signatureName: '', signedLocation: '', signatureFile: null });
@@ -544,6 +585,8 @@ export default function EditEmployeeScreen({ navigation }) {
   const [isSavingDocumentsStep, setIsSavingDocumentsStep] = useState(false);
   const [isLoadingDocuments, setIsLoadingDocuments] = useState(false);
   const [isLoadingChecklist, setIsLoadingChecklist] = useState(false);
+  const [agreementLoading, setAgreementLoading] = useState(false);
+  const [agreementError, setAgreementError] = useState('');
   const [documentError, setDocumentError] = useState('');
   const [checklistError, setChecklistError] = useState('');
   const [fileAction, setFileAction] = useState('');
@@ -555,6 +598,8 @@ export default function EditEmployeeScreen({ navigation }) {
   const [isEditMode, setIsEditMode] = useState(false);
   const [completedStepIndexes, setCompletedStepIndexes] = useState([]);
   const uploadLockRef = useRef(false);
+  const agreementActionLockRef = useRef(false);
+  const agreementSubmissionLockRef = useRef(false);
   const mountedRef = useRef(true);
 
   const documentTypeOptions = useMemo(() => {
@@ -577,7 +622,7 @@ export default function EditEmployeeScreen({ navigation }) {
   const agreementOptions = useMemo(
     () => agreements.map((item) => ({
       label: item.agreementName || item.agreementType || `Agreement ${item.id}`,
-      value: item.id,
+      value: item.agreementId || item.id,
       helper: item.status,
     })),
     [agreements]
@@ -630,6 +675,74 @@ export default function EditEmployeeScreen({ navigation }) {
     setDocuments(nextProfile.documents);
   }, []);
 
+  const loadAgreementsForEmployee = useCallback(async (targetEmployeeId, { quiet = false, signal } = {}) => {
+    if (!targetEmployeeId || !token) {
+      setAgreementTemplates([]);
+      setPendingAgreements([]);
+      setSignedAgreements([]);
+      setAgreements([]);
+      setSelectedAgreement(null);
+      setPendingAgreementCount(0);
+      setSignedAgreementCount(0);
+      return [];
+    }
+
+    if (!quiet) {
+      setAgreementLoading(true);
+    }
+    setAgreementError('');
+
+    try {
+      const [templatesPayload, pendingPayload, signedPayload] = await Promise.all([
+        getAgreementTemplates(token, { signal }),
+        getPendingAgreements(targetEmployeeId, token, { signal }),
+        getSignedAgreements(targetEmployeeId, token, { signal }),
+      ]);
+
+      const nextTemplates = normalizeAgreements(templatesPayload);
+      const nextPending = normalizeAgreements(pendingPayload);
+      const nextSigned = normalizeAgreements(signedPayload);
+      const nextAgreements = mergeAgreementsWithLifecycle(nextTemplates, nextPending, nextSigned);
+
+      // if (__DEV__) {
+      //   console.log('[Employee Agreements]', {
+      //     employeeId: targetEmployeeId,
+      //     templates: nextTemplates.length,
+      //     pending: nextPending.length,
+      //     signed: nextSigned.length,
+      //   });
+      // }
+
+      if (mountedRef.current && !signal?.aborted) {
+        setAgreementTemplates(nextTemplates);
+        setPendingAgreements(nextPending);
+        setSignedAgreements(nextSigned);
+        setAgreements(nextAgreements);
+        setPendingAgreementCount(nextPending.length);
+        setSignedAgreementCount(nextSigned.length);
+
+        setAgreementForm((current) => {
+          const selectedId = current.agreementId;
+          const stillExists = selectedId && nextAgreements.some((item) => String(item.agreementId || item.id) === String(selectedId));
+          return stillExists
+            ? current
+            : { agreementId: '', signatureName: '', signedLocation: '', signatureFile: null };
+        });
+      }
+
+      return nextAgreements;
+    } catch (error) {
+      if (mountedRef.current && !signal?.aborted) {
+        setAgreementError(error?.message || 'Unable to load employee agreements.');
+      }
+      throw error;
+    } finally {
+      if (mountedRef.current && !quiet && !signal?.aborted) {
+        setAgreementLoading(false);
+      }
+    }
+  }, [token]);
+
   const loadAll = useCallback(async ({ refresh = false } = {}) => {
     if (!token) {
       setLoading(false);
@@ -667,7 +780,7 @@ export default function EditEmployeeScreen({ navigation }) {
         const [documentResult, checklistResult, agreementsResult] = await Promise.allSettled([
           getEmployeeDocuments(normalizedProfile.employeeId, token, { signal: controller.signal }),
           getDocumentChecklist(normalizedProfile.employeeId, token, { signal: controller.signal }),
-          getMyAgreements(token, { signal: controller.signal }),
+          loadAgreementsForEmployee(normalizedProfile.employeeId, { quiet: true, signal: controller.signal }),
         ]);
 
         if (documentResult.status === 'fulfilled') {
@@ -676,10 +789,8 @@ export default function EditEmployeeScreen({ navigation }) {
         if (checklistResult.status === 'fulfilled') {
           setDocumentChecklist(normalizeDocumentChecklist(checklistResult.value));
         }
-        if (agreementsResult.status === 'fulfilled') {
-          setAgreements(normalizeAgreements(agreementsResult.value));
-        } else {
-          setAgreements([]);
+        if (agreementsResult.status !== 'fulfilled' && mountedRef.current) {
+          setAgreementError(agreementsResult.reason?.message || 'Unable to load employee agreements.');
         }
       }
     } catch (error) {
@@ -693,7 +804,7 @@ export default function EditEmployeeScreen({ navigation }) {
         setDirty(false);
       }
     }
-  }, [applyProfile, token]);
+  }, [applyProfile, loadAgreementsForEmployee, token]);
 
   const refreshDocuments = useCallback(async ({ quiet = false } = {}) => {
     if (!employeeId || !token) {
@@ -759,8 +870,18 @@ export default function EditEmployeeScreen({ navigation }) {
     if (step === 4 && activeDocumentTab === 'documents' && employeeId && token) {
       refreshDocuments({ quiet: true }).catch(() => {});
     }
-    // Intentionally tied to the visible Documents tab, not every refreshDocuments state change.
-  }, [activeDocumentTab, employeeId, step, token]);
+    if (step === 4 && activeDocumentTab === 'agreements' && employeeId && token) {
+      loadAgreementsForEmployee(employeeId).catch(() => {});
+    }
+    // Intentionally tied to the visible Step 5 tab instead of every document/agreement state change.
+  }, [activeDocumentTab, employeeId, loadAgreementsForEmployee, step, token]);
+
+  useEffect(() => {
+    const nextAgreement = agreements.find((item) =>
+      String(item.agreementId || item.id) === String(agreementForm.agreementId)
+    ) || null;
+    setSelectedAgreement(nextAgreement);
+  }, [agreementForm.agreementId, agreements]);
 
   const handleRefresh = useCallback(() => {
     if (isEditMode && dirty) {
@@ -1025,7 +1146,7 @@ export default function EditEmployeeScreen({ navigation }) {
     if (!file) return;
     const maxSize = signature ? MAX_SIGNATURE_SIZE : MAX_DOCUMENT_SIZE;
     if (file.size && file.size > maxSize) {
-      Alert.alert('File too large', signature ? 'Signature image must be 10 MB or less.' : 'Document must be 3 MB or less.');
+      Alert.alert('File too large', signature ? 'Signature image must be 500KB or less.' : 'Document must be 500KB or less.');
       return;
     }
     if (!signature && !isSupportedDocumentFile(file)) {
@@ -1083,7 +1204,7 @@ export default function EditEmployeeScreen({ navigation }) {
     if (!documentType) return Alert.alert('Document type required', 'Select a document type.');
     if (!selectedFile) return Alert.alert('File required', 'Select a document file.');
     if (!isSupportedDocumentFile(selectedFile)) return Alert.alert('Unsupported file', 'Please select a PDF, JPG, JPEG, or PNG file.');
-    if (selectedFile.size && selectedFile.size > MAX_DOCUMENT_SIZE) return Alert.alert('File too large', 'Document must be 3 MB or less.');
+    if (selectedFile.size && selectedFile.size > MAX_DOCUMENT_SIZE) return Alert.alert('File too large', 'Document must be 500KB or less.');
 
     const selectedTypeKey = normalizeDocumentType(documentType);
     if (
@@ -1190,15 +1311,24 @@ export default function EditEmployeeScreen({ navigation }) {
   };
 
   const handleAgreementAction = async (agreement, type) => {
-    if (fileAction) return;
-    setFileAction(`${type}-${agreement.id}`);
+    if (!agreement || agreementActionLockRef.current || fileAction) return;
+    const actionId = getAgreementDisplayId(agreement);
+    const actionKey = `${type}-${actionId}`;
+    agreementActionLockRef.current = true;
+    setFileAction(actionKey);
     try {
+      const signed = isAgreementSigned(agreement);
+      if ((type === 'signed' || type === 'download') && !signed) {
+        Alert.alert('Signed agreement unavailable', 'This agreement has not been signed yet.');
+        return;
+      }
+
       const file =
         type === 'view'
-          ? await viewAgreementDocument(agreement.agreementId || agreement.id, token, `${agreement.agreementName}.pdf`)
+          ? await viewAgreementDocument(agreement, token, getAgreementFileName(agreement))
           : type === 'signed'
-            ? await viewSignedAgreementDocument(agreement.employeeAgreementId || agreement.id, token, `Signed-${agreement.agreementName}.pdf`)
-            : await downloadSignedAgreementDocument(agreement.employeeAgreementId || agreement.id, token, `Signed-${agreement.agreementName}.pdf`);
+            ? await viewSignedAgreementDocument(agreement, token, getAgreementFileName(agreement, true))
+            : await downloadSignedAgreementDocument(agreement, token, getAgreementFileName(agreement, true));
       if (type === 'download') {
         await Sharing.shareAsync(file.uri, { mimeType: file.contentType, dialogTitle: 'Save or share agreement' });
       } else {
@@ -1207,35 +1337,51 @@ export default function EditEmployeeScreen({ navigation }) {
     } catch (error) {
       Alert.alert('Agreement action failed', error?.message || 'Unable to complete agreement action.');
     } finally {
+      agreementActionLockRef.current = false;
       setFileAction('');
     }
   };
 
   const submitAgreement = async () => {
-    if (!isEditMode) return;
-    const agreement = agreements.find((item) => item.id === agreementForm.agreementId);
+    if (agreementSubmissionLockRef.current || saving) return;
+    if (!isEditMode) {
+      Alert.alert('Edit required', 'Tap Edit before submitting an agreement.');
+      return;
+    }
+    const agreement = selectedAgreement || agreements.find((item) => String(item.agreementId || item.id) === String(agreementForm.agreementId));
     if (!agreement) return Alert.alert('Agreement required', 'Select an agreement.');
+    if (isAgreementSigned(agreement)) return Alert.alert('Already signed', 'This agreement has already been signed.');
+    if (!agreement.agreementCode) return Alert.alert('Agreement code missing', 'Agreement code is unavailable. Refresh and try again.');
+    if (!employeeId) return Alert.alert('Employee ID missing', 'Employee ID is unavailable. Refresh your profile and try again.');
     if (!agreementForm.signatureName.trim()) return Alert.alert('Signature name required', 'Enter your signature name.');
     if (!agreementForm.signedLocation.trim()) return Alert.alert('Signed location required', 'Enter the signed location.');
     if (!agreementForm.signatureFile) return Alert.alert('Signature image required', 'Select a signature image.');
+    if (agreementForm.signatureFile.mimeType && !['image/png', 'image/jpeg', 'image/jpg'].includes(agreementForm.signatureFile.mimeType)) {
+      return Alert.alert('Unsupported file', 'Please select a PNG or JPG signature image.');
+    }
+    agreementSubmissionLockRef.current = true;
     setSaving(true);
+    setAgreementError('');
+    setApiError('');
     try {
       await signEmployeeAgreement({
-        agreementId: agreement.agreementId || agreement.id,
+        agreementCode: agreement.agreementCode,
         employeeId,
         signatureName: agreementForm.signatureName.trim(),
         signedLocation: agreementForm.signedLocation.trim(),
         signatureFile: agreementForm.signatureFile,
       }, token);
-      setAgreementForm({ agreementId: '', signatureName: '', signedLocation: '', signatureFile: null });
-      await loadAll({ refresh: true });
+      const selectedId = agreement.agreementId || agreement.id;
+      setAgreementForm({ agreementId: selectedId, signatureName: '', signedLocation: '', signatureFile: null });
+      await loadAgreementsForEmployee(employeeId, { quiet: true });
       markStepCompleted(4);
+      setDirty(false);
       setSuccess('Agreement signed successfully.');
     } catch (error) {
-      setApiError(error?.message || 'Unable to sign agreement.');
+      setAgreementError(error?.message || 'Unable to sign agreement.');
     } finally {
+      agreementSubmissionLockRef.current = false;
       setSaving(false);
-      setDirty(false);
     }
   };
 
@@ -1547,7 +1693,7 @@ export default function EditEmployeeScreen({ navigation }) {
                 <Ionicons name="cloud-upload-outline" size={20} color={colors.primary} />
                 <Text style={styles.fileButtonText}>{selectedFile?.name || 'Select PDF, JPG, JPEG or PNG'}</Text>
               </TouchableOpacity>
-              <Text style={styles.helperText}>Maximum file size: 3 MB</Text>
+              <Text style={styles.helperText}>Maximum file size: 500 KB</Text>
               {!!selectedFile && (
                 <View style={styles.selectedFileCard}>
                   <View style={styles.selectedFileIcon}>
@@ -1693,36 +1839,218 @@ export default function EditEmployeeScreen({ navigation }) {
         </>
       ) : (
         <Section title="Employee Agreements">
-          {agreements.length ? agreements.map((agreement) => (
-            <View key={agreement.id} style={styles.documentRow}>
-              <View style={styles.documentInfo}>
-                <Text style={styles.rowTitle}>{agreement.agreementName}</Text>
-                <Text style={styles.rowMeta}>{agreement.agreementType || 'Agreement'} - {agreement.status}</Text>
-                <Text style={styles.rowMeta}>{agreement.agreementCode || '-'}</Text>
-              </View>
-              <View style={styles.rowActions}>
-                <TouchableOpacity style={styles.iconAction} onPress={() => handleAgreementAction(agreement, 'view')} accessibilityRole="button"><Ionicons name="eye-outline" size={18} color={colors.primary} /></TouchableOpacity>
-                <TouchableOpacity style={styles.iconAction} onPress={() => handleAgreementAction(agreement, 'signed')} accessibilityRole="button"><Ionicons name="document-text-outline" size={18} color={colors.primary} /></TouchableOpacity>
-                <TouchableOpacity style={styles.iconAction} onPress={() => handleAgreementAction(agreement, 'download')} accessibilityRole="button"><Ionicons name="download-outline" size={18} color={colors.primary} /></TouchableOpacity>
-              </View>
+          <Text style={styles.sectionDescription}>Review and sign company agreements assigned to you.</Text>
+
+          <View style={styles.agreementCountRow}>
+            <View style={styles.agreementCountChip}>
+              <Text style={styles.agreementCountValue}>{pendingAgreementCount}</Text>
+              <Text style={styles.agreementCountLabel}>Pending Agreements</Text>
             </View>
-          )) : <Text style={styles.emptyText}>No employee agreements available.</Text>}
-          {!!agreements.length && (
+            <View style={styles.agreementCountChip}>
+              <Text style={styles.agreementCountValue}>{signedAgreementCount}</Text>
+              <Text style={styles.agreementCountLabel}>Signed Agreements</Text>
+            </View>
+          </View>
+
+          {agreementLoading && !agreementTemplates.length ? (
+            <View style={styles.inlineLoader}>
+              <ActivityIndicator color={colors.primary} />
+              <Text style={styles.helperText}>Loading agreements...</Text>
+            </View>
+          ) : agreementError && !agreementTemplates.length ? (
+            <TouchableOpacity
+              style={styles.inlineErrorBox}
+              onPress={() => loadAgreementsForEmployee(employeeId)}
+              accessibilityRole="button"
+            >
+              <Ionicons name="alert-circle-outline" size={16} color={colors.employeeEdit.error} />
+              <Text style={styles.inlineErrorText}>Unable to load employee agreements.</Text>
+              <Text style={styles.inlineRetryText}>Retry</Text>
+            </TouchableOpacity>
+          ) : !agreementTemplates.length ? (
+            <View style={styles.emptyDocumentState}>
+              <Ionicons name="document-text-outline" size={22} color={colors.textSecondary} />
+              <Text style={styles.emptyDocumentTitle}>No employee agreements are configured.</Text>
+            </View>
+          ) : (
             <>
-              {isEditMode && (
-                <>
-                  <ReadOnlySelectionField label="Agreement Type" value={agreementForm.agreementId} options={agreementOptions} onChange={(value) => { setAgreementForm((current) => ({ ...current, agreementId: value })); setDirty(true); }} placeholder="Select agreement" />
-                  <ReadOnlyField label="Signature Name" value={agreementForm.signatureName} onChangeText={(value) => { setAgreementForm((current) => ({ ...current, signatureName: value })); setDirty(true); }} />
-                  <ReadOnlyField label="Signed Location" value={agreementForm.signedLocation} onChangeText={(value) => { setAgreementForm((current) => ({ ...current, signedLocation: value })); setDirty(true); }} />
-                  <TouchableOpacity style={styles.fileButton} onPress={() => chooseFile({ signature: true })} accessibilityRole="button">
-                    <Ionicons name="image-outline" size={20} color={colors.primary} />
-                    <Text style={styles.fileButtonText}>{agreementForm.signatureFile?.name || 'Select signature image'}</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity style={[styles.primaryButton, saving && styles.buttonDisabled]} onPress={submitAgreement} disabled={saving} accessibilityRole="button">
-                    {saving ? <ActivityIndicator color={colors.white} /> : <Text style={styles.primaryButtonText}>Submit Agreement</Text>}
-                  </TouchableOpacity>
-                </>
+              {!!agreementError && (
+                <TouchableOpacity
+                  style={styles.inlineErrorBox}
+                  onPress={() => loadAgreementsForEmployee(employeeId)}
+                  accessibilityRole="button"
+                >
+                  <Ionicons name="alert-circle-outline" size={16} color={colors.employeeEdit.error} />
+                  <Text style={styles.inlineErrorText}>{agreementError}</Text>
+                  <Text style={styles.inlineRetryText}>Retry</Text>
+                </TouchableOpacity>
               )}
+
+              <SelectionField
+                label="Agreement Type"
+                value={agreementForm.agreementId}
+                options={agreementOptions}
+                onChange={(value) => {
+                  const nextAgreement = agreements.find((item) =>
+                    String(item.agreementId || item.id) === String(value)
+                  ) || null;
+                  setAgreementForm({
+                    agreementId: value,
+                    signatureName: '',
+                    signedLocation: '',
+                    signatureFile: null,
+                  });
+                  setSelectedAgreement(nextAgreement);
+                  if (__DEV__ && nextAgreement) {
+                    console.log('[Agreement Selected]', {
+                      agreementId: nextAgreement.agreementId,
+                      agreementName: nextAgreement.agreementName,
+                      agreementCode: nextAgreement.agreementCode,
+                      status: nextAgreement.status,
+                    });
+                  }
+                }}
+                placeholder="Select Agreement"
+                disabled={agreementLoading || saving}
+              />
+
+              <Field label="Agreement Name" value={agreementText(selectedAgreement?.agreementName)} editable={false} />
+              <Field label="Employee ID" value={agreementText(employeeId)} editable={false} />
+              <Field label="Agreement Code" value={agreementText(selectedAgreement?.agreementCode)} editable={false} />
+              <View style={styles.agreementStatusRow}>
+                <Field label="Status" value={agreementText(selectedAgreement?.status)} editable={false} />
+                {!!selectedAgreement && (
+                  <View style={[
+                    styles.documentStatusBadge,
+                    { backgroundColor: isAgreementSigned(selectedAgreement) ? colors.successBackground : colors.warningBackground },
+                  ]}>
+                    <Text style={[
+                      styles.documentStatusText,
+                      { color: isAgreementSigned(selectedAgreement) ? colors.success : colors.warning },
+                    ]}>
+                      {isAgreementSigned(selectedAgreement) ? 'Signed' : 'Pending'}
+                    </Text>
+                  </View>
+                )}
+              </View>
+
+              <ReadOnlyField
+                label="Signature Name *"
+                value={agreementForm.signatureName}
+                editable={Boolean(selectedAgreement) && !isAgreementSigned(selectedAgreement) && !saving}
+                onChangeText={(value) => {
+                  setAgreementForm((current) => ({ ...current, signatureName: value }));
+                  setDirty(true);
+                }}
+              />
+              <ReadOnlyField
+                label="Signed Location *"
+                value={agreementForm.signedLocation}
+                editable={Boolean(selectedAgreement) && !isAgreementSigned(selectedAgreement) && !saving}
+                onChangeText={(value) => {
+                  setAgreementForm((current) => ({ ...current, signedLocation: value }));
+                  setDirty(true);
+                }}
+              />
+
+              <TouchableOpacity
+                style={[
+                  styles.fileButton,
+                  (!isEditMode || !selectedAgreement || isAgreementSigned(selectedAgreement) || saving) && styles.inputDisabled,
+                ]}
+                onPress={() => chooseFile({ signature: true })}
+                disabled={!isEditMode || !selectedAgreement || isAgreementSigned(selectedAgreement) || saving}
+                accessibilityRole="button"
+                accessibilityState={{ disabled: !isEditMode || !selectedAgreement || isAgreementSigned(selectedAgreement) || saving }}
+              >
+                <Ionicons name="image-outline" size={20} color={colors.primary} />
+                <Text style={styles.fileButtonText}>{agreementForm.signatureFile?.name || 'Choose Signature Image'}</Text>
+              </TouchableOpacity>
+              <Text style={styles.helperText}>PNG, JPG or JPEG. Maximum file size: 500KB.</Text>
+              {!!agreementForm.signatureFile && (
+                <View style={styles.selectedFileCard}>
+                  <View style={styles.selectedFileIcon}>
+                    <Ionicons name="image-outline" size={18} color={colors.primary} />
+                  </View>
+                  <View style={styles.selectedFileInfo}>
+                    <Text style={styles.selectedFileName} numberOfLines={1}>{agreementForm.signatureFile.name}</Text>
+                    <Text style={styles.selectedFileMeta}>
+                      {getFileExtension(agreementForm.signatureFile).toUpperCase() || agreementForm.signatureFile.mimeType || 'IMAGE'} - {formatFileSize(agreementForm.signatureFile.size)}
+                    </Text>
+                  </View>
+                </View>
+              )}
+
+              <View style={styles.agreementActionGrid}>
+                {[
+                  { type: 'view', label: 'View Agreement', icon: 'eye-outline', disabled: !selectedAgreement },
+                  { type: 'signed', label: 'View Signed', icon: 'document-text-outline', disabled: !selectedAgreement || !isAgreementSigned(selectedAgreement) },
+                  { type: 'download', label: 'Download Signed', icon: 'download-outline', disabled: !selectedAgreement || !isAgreementSigned(selectedAgreement) },
+                ].map((action) => {
+                  const actionKey = `${action.type}-${getAgreementDisplayId(selectedAgreement || {})}`;
+                  const isBusy = fileAction === actionKey;
+                  const disabled = action.disabled || Boolean(fileAction) || saving;
+                  return (
+                    <TouchableOpacity
+                      key={action.type}
+                      style={[styles.agreementActionButton, disabled && styles.secondaryButtonDisabled]}
+                      onPress={() => handleAgreementAction(selectedAgreement, action.type)}
+                      disabled={disabled}
+                      accessibilityRole="button"
+                      accessibilityState={{ disabled, busy: isBusy }}
+                    >
+                      {isBusy ? <ActivityIndicator size="small" color={colors.primary} /> : <Ionicons name={action.icon} size={17} color={colors.primary} />}
+                      <Text style={styles.documentActionText}>{action.label}</Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+
+              <TouchableOpacity
+                style={[
+                  styles.primaryButton,
+                  (
+                    saving ||
+                    !isEditMode ||
+                    !selectedAgreement ||
+                    isAgreementSigned(selectedAgreement) ||
+                    !agreementForm.signatureName.trim() ||
+                    !agreementForm.signedLocation.trim() ||
+                    !agreementForm.signatureFile
+                  ) && styles.buttonDisabled,
+                ]}
+                onPress={submitAgreement}
+                disabled={
+                  saving ||
+                  !isEditMode ||
+                  !selectedAgreement ||
+                  isAgreementSigned(selectedAgreement) ||
+                  !agreementForm.signatureName.trim() ||
+                  !agreementForm.signedLocation.trim() ||
+                  !agreementForm.signatureFile
+                }
+                accessibilityRole="button"
+                accessibilityState={{
+                  disabled:
+                    saving ||
+                    !isEditMode ||
+                    !selectedAgreement ||
+                    isAgreementSigned(selectedAgreement) ||
+                    !agreementForm.signatureName.trim() ||
+                    !agreementForm.signedLocation.trim() ||
+                    !agreementForm.signatureFile,
+                  busy: saving,
+                }}
+              >
+                {saving ? (
+                  <>
+                    <ActivityIndicator color={colors.white} />
+                    <Text style={styles.primaryButtonText}>Submitting...</Text>
+                  </>
+                ) : (
+                  <Text style={styles.primaryButtonText}>Submit Agreement</Text>
+                )}
+              </TouchableOpacity>
             </>
           )}
         </Section>
@@ -1732,7 +2060,7 @@ export default function EditEmployeeScreen({ navigation }) {
         onNext={continueFromDocuments}
         nextLabel="Next"
         loading={isSavingDocumentsStep}
-        disabled={isUploadingDocument}
+        disabled={isUploadingDocument || saving}
       />
     </>
   );
@@ -2119,6 +2447,12 @@ const styles = StyleSheet.create({
     fontSize: fontSizes.headerTitle,
     fontWeight: fontWeights.extraBold,
     marginBottom: spacing.lg,
+  },
+  sectionDescription: {
+    color: colors.textSecondary,
+    fontSize: fontSizes.base,
+    lineHeight: 19,
+    fontWeight: fontWeights.medium,
   },
   sectionBody: {
     gap: spacing.md,
@@ -2672,6 +3006,51 @@ const styles = StyleSheet.create({
   },
   documentActionDangerText: {
     color: colors.employeeEdit.removeText,
+  },
+  agreementCountRow: {
+    flexDirection: 'row',
+    gap: spacing.md,
+    flexWrap: 'wrap',
+  },
+  agreementCountChip: {
+    flexGrow: 1,
+    minWidth: 134,
+    borderRadius: radii.lg,
+    borderWidth: 1,
+    borderColor: colors.employeeEdit.border,
+    backgroundColor: colors.employeeEdit.secondaryAction,
+    padding: spacing.lg,
+  },
+  agreementCountValue: {
+    color: colors.primary,
+    fontSize: fontSizes.headerTitle,
+    fontWeight: fontWeights.extraBold,
+  },
+  agreementCountLabel: {
+    marginTop: spacing.xs,
+    color: colors.textSecondary,
+    fontSize: fontSizes.sm,
+    fontWeight: fontWeights.bold,
+  },
+  agreementStatusRow: {
+    gap: spacing.sm,
+  },
+  agreementActionGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+  },
+  agreementActionButton: {
+    minHeight: sizes.minTouchTarget,
+    flexGrow: 1,
+    flexBasis: 150,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.xs,
+    borderRadius: radii.pill,
+    backgroundColor: colors.employeeEdit.secondaryAction,
+    paddingHorizontal: spacing.md,
   },
   iconAction: {
     width: 36,

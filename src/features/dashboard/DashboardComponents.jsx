@@ -15,7 +15,7 @@ import Svg, { Circle, Defs, LinearGradient, Line, Path, Stop } from 'react-nativ
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { colors, fontSizes, fontWeights, radii, shadows, sizes, spacing } from '../../theme';
-import { formatDate, formatWorkingHours, normalizeNumber } from './dashboardMappers';
+import { formatWorkingHours, normalizeNumber } from './dashboardMappers';
 
 const CARD_ICON_SIZE = sizes.dashboardMetricIcon;
 const RING_SIZE = 164;
@@ -414,6 +414,11 @@ function ChartHeader() {
   );
 }
 
+function formatBirthday(value) {
+  const normalized = String(value || '').trim();
+  return normalized || '--';
+}
+
 export function UpcomingBirthdaysCard({
   birthdays = [],
   loading = false,
@@ -452,11 +457,12 @@ export function UpcomingBirthdaysCard({
 
 function BirthdayItem({ birthday }) {
   const badgeText = birthday.daysRemaining === 0 ? 'Today' : `${birthday.daysRemaining} ${birthday.daysRemaining === 1 ? 'day' : 'days'} left`;
+  const birthdayText = formatBirthday(birthday.birthday);
   return (
     <View
       style={styles.birthdayItem}
       accessible
-      accessibilityLabel={`${birthday.employeeName}, birthday ${formatDate(birthday.birthday)}, ${badgeText}`}
+      accessibilityLabel={`${birthday.employeeName}, ${birthday.employeeId || 'Employee'}, birthday ${birthdayText}, ${badgeText}`}
     >
       <View style={styles.avatar}>
         {birthday.imageUrl ? (
@@ -467,8 +473,8 @@ function BirthdayItem({ birthday }) {
       </View>
       <View style={styles.birthdayCopy}>
         <Text style={styles.birthdayName} numberOfLines={1}>{birthday.employeeName}</Text>
-        <Text style={styles.birthdayMeta} numberOfLines={1}>{birthday.designation || birthday.employeeId || 'Employee'}</Text>
-        <Text style={styles.birthdayDate}>{formatDate(birthday.birthday)}</Text>
+        <Text style={styles.birthdayMeta} numberOfLines={1}>{birthday.employeeId || 'Employee'}</Text>
+        <Text style={styles.birthdayDate}>{birthdayText}</Text>
       </View>
       <View style={[styles.birthdayBadge, birthday.daysRemaining === 0 && styles.birthdayBadgeToday]}>
         <Text style={styles.birthdayBadgeText}>{badgeText}</Text>

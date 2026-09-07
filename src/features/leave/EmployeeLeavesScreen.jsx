@@ -7,6 +7,7 @@ import {
   Modal,
   Platform,
   RefreshControl,
+  ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -120,6 +121,42 @@ function formatLeaveType(type) {
   return type || 'Leave';
 }
 
+function compactText(value) {
+  if (value && typeof value === 'object') {
+    return compactText(value.name || value.employeeName || value.fullName || value.userName || '');
+  }
+  const normalized = String(value ?? '').trim();
+  return normalized || '';
+}
+
+function getApproverName(item = {}) {
+  const directName = compactText(
+    item?.approvedByName ||
+      item?.approvedByEmployeeName ||
+      item?.approvedByUserName ||
+      item?.approverName ||
+      item?.managerName ||
+      item?.approvedBy ||
+      ''
+  );
+  if (directName) return directName;
+
+  const statusMatch = /^approved\s+by\s+(.+)$/i.exec(compactText(item?.status || item?.leaveStatus || item?.requestStatus));
+  return statusMatch?.[1]?.trim() || '';
+}
+
+function getRejectedByName(item = {}) {
+  return compactText(item?.rejectedByName || item?.rejectedByEmployeeName || item?.rejectedByUserName || item?.rejectedBy || '');
+}
+
+function getRejectionReason(item = {}) {
+  return compactText(item?.rejectionReason || item?.rejectReason || item?.remarks || item?.adminRemarks || item?.managerRemarks || '');
+}
+
+function getCancellationDetail(item = {}) {
+  return compactText(item?.cancelReason || item?.cancellationReason || item?.cancelledReason || item?.cancelledOn || item?.cancelledAt || '');
+}
+
 function normalizeLeaveRecord(item, requestType) {
   const id = getLeaveRecordId(item);
   const fromDate = item?.fromDate || item?.from || item?.startDate || item?.leaveFrom || '';
@@ -135,6 +172,10 @@ function normalizeLeaveRecord(item, requestType) {
     toDate,
     reason: item?.reason || item?.leaveReason || item?.description || '',
     status,
+    approvedBy: getApproverName(item),
+    rejectedBy: getRejectedByName(item),
+    rejectionReason: getRejectionReason(item),
+    cancellationDetail: getCancellationDetail(item),
     sortDate: item?.createdAt || item?.createdOn || item?.appliedDate || item?.requestedOn || fromDate || toDate || '',
   };
 }
@@ -162,16 +203,75 @@ function getStatusMeta(status) {
   return { backgroundColor: colors.leave.statusDefaultBackground, color: colors.leave.statusDefaultText };
 }
 
+function getCompactLeaveStatus(value) {
+  const raw = String(value || '').trim();
+
+  if (!raw) {
+    return '--';
+  }
+
+  const normalized = raw.toLowerCase();
+
+  if (normalized.includes('approved as wfh')) {
+    return 'Approved as WFH';
+  }
+
+  if (normalized.includes('approved as leave')) {
+    return 'Approved as Leave';
+  }
+
+  if (normalized.includes('rejected as wfh')) {
+    return 'Rejected as WFH';
+  }
+
+  if (normalized.includes('rejected as leave')) {
+    return 'Rejected as Leave';
+  }
+
+  if (normalized.startsWith('approved')) {
+    return 'Approved';
+  }
+
+  if (normalized.startsWith('rejected')) {
+    return 'Rejected';
+  }
+
+  if (normalized.includes('cancel')) {
+    return 'Cancelled';
+  }
+
+  if (normalized.includes('pending')) {
+    return 'Pending';
+  }
+
+  const withoutApprover = raw.replace(/\s+by\s+.+$/i, '').trim();
+  return withoutApprover || raw;
+}
+
+function RequestDetailRow({ label, value }) {
+  const displayValue = compactText(value);
+  if (!displayValue) return null;
+
+  return (
+    <View style={styles.detailRow}>
+      <Text style={styles.detailLabel}>{label}</Text>
+      <Text style={styles.detailValue}>{displayValue}</Text>
+    </View>
+  );
+}
+
 export default function EmployeeLeavesScreen() {
   const { token } = useAuth();
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const mountedRef = useRef(true);
   const controllerRef = useRef(null);
+  const detailsScrollRef = useRef(null);
 
   const [form, setForm] = useState(EMPTY_FORM);
   const [leaveData, setLeaveData] = useState([]);
   const [wfhData, setWfhData] = useState([]);
+  const [selectedRequest, setSelectedRequest] = useState(null);
   const [loading, setLoading] = useState({
     initial: true,
     leaves: true,
@@ -185,6 +285,7 @@ export default function EmployeeLeavesScreen() {
   const [typePickerVisible, setTypePickerVisible] = useState(false);
 
   const isNarrow = width < 350;
+  const requestDetailsModalWidth = Math.min(width - spacing.screen * 2, 560);
   const selectedLeaveType = LEAVE_TYPES.find((item) => item.value === form.leaveType) || LEAVE_TYPES[0];
 
   const setLoadingPatch = useCallback((patch) => {
@@ -277,6 +378,22 @@ export default function EmployeeLeavesScreen() {
     () => [...leaveData, ...wfhData].sort(sortByRecency),
     [leaveData, wfhData]
   );
+
+  useEffect(() => {
+    if (selectedRequest) {
+      requestAnimationFrame(() => {
+        detailsScrollRef.current?.scrollTo({ y: 0, animated: false });
+      });
+    }
+  }, [selectedRequest]);
+
+  const openRequestDetails = useCallback((request) => {
+    setSelectedRequest(request);
+  }, []);
+
+  const closeRequestDetails = useCallback(() => {
+    setSelectedRequest(null);
+  }, []);
 
   const updateForm = (key, value) => {
     setForm((current) => ({ ...current, [key]: value }));
@@ -508,36 +625,133 @@ export default function EmployeeLeavesScreen() {
     </View>
   );
 
+  const renderRequestDetailsModal = () => {
+    const request = selectedRequest;
+    const statusMeta = getStatusMeta(request?.status);
+    const isWfh = request?.requestType === 'WFH';
+    const normalizedStatus = String(request?.status || '').toLowerCase();
+    const reason = compactText(request?.reason) || 'No reason provided.';
+
+    return (
+      <Modal
+        visible={Boolean(request)}
+        transparent
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={closeRequestDetails}
+      >
+        <View style={styles.detailsOverlay}>
+          <View style={[styles.detailsCard, { width: requestDetailsModalWidth }]}>
+            <View style={styles.detailsHeader}>
+              <View style={styles.detailsTitleWrap}>
+                <Text style={styles.detailsTitle}>Request Details</Text>
+                <Text style={styles.detailsSubtitle}>
+                  {isWfh ? 'Work From Home request information' : 'Leave request information'}
+                </Text>
+              </View>
+              <TouchableOpacity
+                style={styles.detailsCloseButton}
+                onPress={closeRequestDetails}
+                activeOpacity={0.78}
+                accessibilityRole="button"
+                accessibilityLabel="Close request details"
+              >
+                <Ionicons name="close" size={21} color={colors.textPrimary} />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView
+              ref={detailsScrollRef}
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={styles.detailsBody}
+            >
+              <View style={styles.detailsBadgeRow}>
+                <View style={styles.requestTypeBadge}>
+                  <Ionicons
+                    name={isWfh ? 'home-outline' : 'document-text-outline'}
+                    size={15}
+                    color={colors.primary}
+                  />
+                  <Text style={styles.requestTypeText}>{request?.requestType || '--'}</Text>
+                </View>
+                <View style={[styles.statusBadge, { backgroundColor: statusMeta.backgroundColor }]}>
+                  <Text style={[styles.statusText, { color: statusMeta.color }]}>
+                    {request?.status || 'Unknown'}
+                  </Text>
+                </View>
+              </View>
+
+              <RequestDetailRow label="Request Type" value={isWfh ? 'Work From Home' : 'Leave'} />
+              <RequestDetailRow label={isWfh ? 'Type' : 'Leave Type'} value={formatLeaveType(request?.leaveType)} />
+              <RequestDetailRow label="From" value={formatDateForDisplay(request?.fromDate)} />
+              <RequestDetailRow label="To" value={formatDateForDisplay(request?.toDate)} />
+              <RequestDetailRow label="Status" value={request?.status || 'Unknown'} />
+              <RequestDetailRow label="Approved By" value={request?.approvedBy} />
+              {normalizedStatus.includes('reject') && (
+                <>
+                  <RequestDetailRow label="Rejected By" value={request?.rejectedBy} />
+                  <RequestDetailRow label="Rejection Reason" value={request?.rejectionReason} />
+                </>
+              )}
+              {normalizedStatus.includes('cancel') && (
+                <RequestDetailRow label="Cancellation Details" value={request?.cancellationDetail} />
+              )}
+
+              <View style={styles.reasonDetailBox}>
+                <Text style={styles.detailLabel}>Reason</Text>
+                <Text style={styles.detailReason}>{reason}</Text>
+              </View>
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+    );
+  };
+
   const renderRequest = ({ item }) => {
     const statusMeta = getStatusMeta(item.status);
+    const cardStatusLabel = getCompactLeaveStatus(item.status);
     const isPending = String(item.status || '').toLowerCase().includes('pending');
     const actionKey = `${item.requestType}-${item.id}`;
     const isActionLoading = loading.actionId === actionKey;
 
     return (
       <View style={styles.requestCard}>
-        <View style={styles.requestTopRow}>
-          <View style={styles.requestTypeBadge}>
-            <Ionicons
-              name={item.requestType === 'WFH' ? 'home-outline' : 'document-text-outline'}
-              size={15}
-              color={colors.primary}
-            />
-            <Text style={styles.requestTypeText}>{item.requestType}</Text>
+        <TouchableOpacity
+          style={styles.requestDetailsPressable}
+          onPress={() => openRequestDetails(item)}
+          activeOpacity={0.82}
+          accessibilityRole="button"
+          accessibilityLabel={`View details for ${formatLeaveType(item.leaveType)} request`}
+        >
+          <View style={styles.requestTopRow}>
+            <View style={styles.requestTypeBadge}>
+              <Ionicons
+                name={item.requestType === 'WFH' ? 'home-outline' : 'document-text-outline'}
+                size={15}
+                color={colors.primary}
+              />
+              <Text style={styles.requestTypeText}>{item.requestType}</Text>
+            </View>
+            <View style={[styles.statusBadge, { backgroundColor: statusMeta.backgroundColor }]}>
+              <Text
+                style={[styles.statusText, { color: statusMeta.color }]}
+                numberOfLines={1}
+              >
+                {cardStatusLabel}
+              </Text>
+            </View>
           </View>
-          <View style={[styles.statusBadge, { backgroundColor: statusMeta.backgroundColor }]}>
-            <Text style={[styles.statusText, { color: statusMeta.color }]}>{item.status || 'Unknown'}</Text>
-          </View>
-        </View>
 
-        <Text style={styles.requestTitle}>{formatLeaveType(item.leaveType)}</Text>
-        <View style={styles.requestDates}>
-          <Text style={styles.requestDateText}>From {formatDateForDisplay(item.fromDate)}</Text>
-          <Text style={styles.requestDateText}>To {formatDateForDisplay(item.toDate)}</Text>
-        </View>
-        <Text style={styles.reasonText} numberOfLines={3}>
-          {item.reason || 'No reason provided'}
-        </Text>
+          <Text style={styles.requestTitle}>{formatLeaveType(item.leaveType)}</Text>
+          <View style={styles.requestDates}>
+            <Text style={styles.requestDateText}>From {formatDateForDisplay(item.fromDate)}</Text>
+            <Text style={styles.requestDateText}>To {formatDateForDisplay(item.toDate)}</Text>
+          </View>
+          <Text style={styles.reasonText} numberOfLines={3}>
+            {item.reason || 'No reason provided'}
+          </Text>
+        </TouchableOpacity>
 
         {isPending && (
           <TouchableOpacity
@@ -611,6 +825,8 @@ export default function EmployeeLeavesScreen() {
         keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
         showsVerticalScrollIndicator={false}
       />
+
+      {renderRequestDetailsModal()}
 
       <Modal
         visible={typePickerVisible}
@@ -800,6 +1016,7 @@ const styles = StyleSheet.create({
     marginBottom: spacing.lg,
     ...shadows.subtle,
   },
+  requestDetailsPressable: {},
   requestTopRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -827,10 +1044,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
     alignItems: 'center',
     justifyContent: 'center',
+    alignSelf: 'flex-start',
+    maxWidth: '65%',
+    flexShrink: 1,
   },
   statusText: {
     fontSize: fontSizes.sm,
     fontWeight: fontWeights.extraBold,
+    flexShrink: 1,
   },
   requestTitle: {
     color: colors.textPrimary,
@@ -916,6 +1137,97 @@ const styles = StyleSheet.create({
     backgroundColor: colors.overlay,
     justifyContent: 'center',
     padding: spacing.screen,
+  },
+  detailsOverlay: {
+    flex: 1,
+    backgroundColor: colors.overlay,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: spacing.screen,
+  },
+  detailsCard: {
+    maxHeight: '85%',
+    borderRadius: radii.compactCard,
+    backgroundColor: colors.surface,
+    overflow: 'hidden',
+    ...shadows.modal,
+  },
+  detailsHeader: {
+    minHeight: 64,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.lg,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+    paddingLeft: spacing.xxl,
+    paddingRight: spacing.md,
+    paddingVertical: spacing.md,
+  },
+  detailsTitleWrap: {
+    flex: 1,
+    minWidth: 0,
+  },
+  detailsTitle: {
+    color: colors.textPrimary,
+    fontSize: fontSizes.headerTitle,
+    fontWeight: fontWeights.extraBold,
+  },
+  detailsSubtitle: {
+    marginTop: spacing.xs,
+    color: colors.textSecondary,
+    fontSize: fontSizes.base,
+    fontWeight: fontWeights.medium,
+  },
+  detailsCloseButton: {
+    width: sizes.minTouchTarget,
+    height: sizes.minTouchTarget,
+    borderRadius: radii.pill,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.mutedBackground,
+  },
+  detailsBody: {
+    padding: spacing.xxl,
+    gap: spacing.lg,
+  },
+  detailsBadgeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    flexWrap: 'wrap',
+    gap: spacing.md,
+  },
+  detailRow: {
+    gap: spacing.xs,
+    paddingBottom: spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.divider,
+  },
+  detailLabel: {
+    color: colors.textSecondary,
+    fontSize: fontSizes.base,
+    fontWeight: fontWeights.extraBold,
+  },
+  detailValue: {
+    color: colors.textPrimary,
+    fontSize: fontSizes.body,
+    fontWeight: fontWeights.semibold,
+    lineHeight: 20,
+  },
+  reasonDetailBox: {
+    gap: spacing.sm,
+    borderRadius: radii.lg,
+    borderWidth: 1,
+    borderColor: colors.leave.requestDivider,
+    backgroundColor: colors.leave.emptySurface,
+    padding: spacing.lg,
+  },
+  detailReason: {
+    color: colors.textPrimary,
+    fontSize: fontSizes.body,
+    lineHeight: 21,
+    fontWeight: fontWeights.medium,
   },
   typePickerCard: {
     borderRadius: radii.compactCard,

@@ -245,19 +245,34 @@ function resolveImageUrl(record = {}) {
 }
 
 export function normalizeBirthday(record = {}) {
-  const employeeName =
+  const employeeName = String(
     record?.employeeName ||
     record?.name ||
     `${record?.firstName ?? ''} ${record?.lastName ?? ''}`.trim() ||
-    'Employee';
+    'Employee'
+  ).trim();
+  const employeeId = String(
+    record?.employeeId ||
+    record?.employeeID ||
+    record?.employee_id ||
+    record?.id ||
+    ''
+  ).trim();
+  const birthday = String(
+    record?.birthday ||
+    record?.birthDate ||
+    record?.dateOfBirth ||
+    record?.dob ||
+    ''
+  ).trim();
 
   const parsedDays = Number(record?.daysRemaining ?? record?.days_remaining ?? record?.remainingDays ?? 0);
 
   return {
-    employeeId: record?.employeeId || record?.employeeID || record?.employee_id || record?.id || '',
+    employeeId,
     employeeName,
     designation: record?.designation || record?.designationName || record?.roleName || record?.role || record?.position || '',
-    birthday: record?.birthday || record?.dob || record?.birthDate || record?.dateOfBirth || '',
+    birthday,
     daysRemaining: Number.isFinite(parsedDays) ? Math.max(0, parsedDays) : 0,
     imageUrl: resolveImageUrl(record),
     initials: getInitials(employeeName),

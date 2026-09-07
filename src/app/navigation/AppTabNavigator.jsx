@@ -7,6 +7,7 @@ import MyAttendanceScreen from '../../features/attendance/MyAttendanceScreen';
 import EmployeeLeavesScreen from '../../features/leave/EmployeeLeavesScreen';
 import EditEmployeeScreen from '../../features/employees/EditEmployeeScreen';
 import MyHolidaysScreen from '../../features/holidays/MyHolidaysScreen';
+import NotificationsScreen from '../../features/notifications/NotificationsScreen';
 import PayslipScreen from '../../features/payslip/PayslipScreen';
 import ProfileScreen from '../../features/profile/ProfileScreen';
 import TeamDetailsScreen from '../../features/teams/TeamDetailsScreen';
@@ -59,6 +60,7 @@ export default function AppTabNavigator() {
   return (
     <KeyboardTabBarProvider>
       <Tab.Navigator
+        backBehavior="history"
         tabBar={(props) => <FloatingTabBar {...props} />}
         screenOptions={({ navigation, route }) => ({
           header: () => <AppHeader navigation={navigation} title={getTabTitle(route.name)} />,
@@ -128,6 +130,23 @@ export default function AppTabNavigator() {
             tabBarLabel: 'Payslip',
             tabBarButton: () => null,
           }}
+        />
+        <Tab.Screen
+          name={ROUTES.NOTIFICATIONS}
+          component={NotificationsScreen}
+          options={({ navigation }) => ({
+            title: 'Notifications',
+            tabBarLabel: 'Notifications',
+            tabBarButton: () => null,
+            header: () => (
+              <AppHeader
+                navigation={navigation}
+                title="Notifications"
+                showBackButton
+                showNotificationButton={false}
+              />
+            ),
+          })}
         />
         <Tab.Screen
           name={ROUTES.TEAMS_FLOW}

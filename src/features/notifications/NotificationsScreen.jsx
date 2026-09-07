@@ -191,6 +191,7 @@ export default function NotificationsScreen() {
 
   return (
     <FlatList
+      style={styles.list}
       data={listData}
       keyExtractor={(item) => String(item.id)}
       renderItem={renderNotification}
@@ -278,7 +279,12 @@ export default function NotificationsScreen() {
 }
 
 const styles = StyleSheet.create({
+  list: {
+    flex: 1,
+    backgroundColor: colors.notifications.background,
+  },
   content: {
+    flexGrow: 1,
     padding: spacing.screen,
     backgroundColor: colors.notifications.background,
   },

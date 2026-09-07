@@ -8,6 +8,7 @@ import {
   FlatList,
   Modal,
   RefreshControl,
+  ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -152,6 +153,34 @@ function formatAttendanceStatusLabel(status) {
     return 'Late & Missed Checkout';
   }
   return normalized || '--';
+}
+
+function getHistoryRecordDisplayValues(record = {}) {
+  const statusVal = record.status || record.attendanceStatus || '-';
+
+  return {
+    dayName: record.day || record.dayName || 'Day',
+    dateVal: record.date || record.attendanceDate || '--',
+    inVal: formatTime12h(record.checkIn || record.checkInTime),
+    outVal: formatTime12h(record.checkOut || record.checkOutTime),
+    hoursVal: record.hours || record.totalHours || '--',
+    statusVal,
+    statusLabel: formatAttendanceStatusLabel(statusVal),
+  };
+}
+
+function AttendanceDetailRow({ icon, label, value }) {
+  return (
+    <View style={styles.attendanceDetailRow}>
+      <View style={styles.attendanceDetailIcon}>
+        <Ionicons name={icon} size={18} color={colors.primary} />
+      </View>
+      <View style={styles.attendanceDetailCopy}>
+        <Text style={styles.attendanceDetailLabel}>{label}</Text>
+        <Text style={styles.attendanceDetailValue}>{value || '--'}</Text>
+      </View>
+    </View>
+  );
 }
 
 function getCurrentStatusMeta(isCheckedIn, isCheckedOut) {
@@ -300,6 +329,7 @@ export default function MyAttendanceScreen() {
   const [historyError, setHistoryError] = useState('');
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isLoadingHistory, setIsLoadingHistory] = useState(true);
+  const [selectedHistoryRecord, setSelectedHistoryRecord] = useState(null);
   const [isCheckedIn, setIsCheckedIn] = useState(false);
   const [isCheckedOut, setIsCheckedOut] = useState(false);
   const [checkInTime, setCheckInTime] = useState('--');
@@ -770,10 +800,19 @@ export default function MyAttendanceScreen() {
   }, [clearExpiredAttendanceMutationGuard, loadAttendanceSettings, loadHistoryData, loadTodayStatus]);
 
   const handleTabChange = (tabName) => {
+    setSelectedHistoryRecord(null);
     activeTabRef.current = tabName;
     setActiveTab(tabName);
     loadHistoryData(tabName);
   };
+
+  const openAttendanceDetails = useCallback((record) => {
+    setSelectedHistoryRecord(record);
+  }, []);
+
+  const closeAttendanceDetails = useCallback(() => {
+    setSelectedHistoryRecord(null);
+  }, []);
 
   const handleRefresh = useCallback(async () => {
     setIsRefreshing(true);
@@ -1121,21 +1160,25 @@ export default function MyAttendanceScreen() {
     </View>
   );
 
-  const renderHistoryItem = ({ item, index }) => {
-    const dayName = item.day || item.dayName || 'Day';
-    const dateVal = item.date || item.attendanceDate || '--';
-    const inVal = formatTime12h(item.checkIn || item.checkInTime);
-    const outVal = formatTime12h(item.checkOut || item.checkOutTime);
-    const hoursVal = item.hours || item.totalHours || '--';
-    const statusVal = item.status || item.attendanceStatus || '-';
-    const statusLabel = formatAttendanceStatusLabel(statusVal);
+  const renderHistoryItem = ({ item }) => {
+    const {
+      dayName,
+      dateVal,
+      inVal,
+      outVal,
+      hoursVal,
+      statusVal,
+      statusLabel,
+    } = getHistoryRecordDisplayValues(item);
     const badgeStyle = getStatusBadgeStyle(statusVal);
 
     return (
-      <View
+      <TouchableOpacity
         style={styles.historyRow}
-        accessible
-        accessibilityLabel={`${dayName}, ${dateVal}, check in ${inVal}, check out ${outVal}, hours ${hoursVal}, status ${statusLabel}`}
+        onPress={() => openAttendanceDetails(item)}
+        activeOpacity={0.82}
+        accessibilityRole="button"
+        accessibilityLabel={`View attendance details for ${dayName}, ${dateVal}`}
       >
         <View style={styles.historyDate}>
           <Text style={styles.historyDay} numberOfLines={1}>{dayName}</Text>
@@ -1153,7 +1196,58 @@ export default function MyAttendanceScreen() {
             </Text>
           </View>
         </View>
-      </View>
+      </TouchableOpacity>
+    );
+  };
+
+  const renderAttendanceDetailsModal = () => {
+    const record = selectedHistoryRecord;
+    const {
+      dayName,
+      dateVal,
+      inVal,
+      outVal,
+      hoursVal,
+      statusLabel,
+    } = getHistoryRecordDisplayValues(record || {});
+
+    return (
+      <Modal
+        visible={Boolean(record)}
+        transparent
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={closeAttendanceDetails}
+      >
+        <View style={styles.attendanceDetailsOverlay}>
+          <View style={[styles.attendanceDetailsCard, { width: Math.min(width - spacing.xl * 2, 460) }]}>
+            <View style={styles.attendanceDetailsHeader}>
+              <Text style={styles.attendanceDetailsTitle}>Attendance Details</Text>
+              <TouchableOpacity
+                style={styles.attendanceDetailsCloseButton}
+                onPress={closeAttendanceDetails}
+                activeOpacity={0.78}
+                accessibilityRole="button"
+                accessibilityLabel="Close attendance details"
+              >
+                <Ionicons name="close" size={21} color={colors.textPrimary} />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView
+              contentContainerStyle={styles.attendanceDetailsBody}
+              showsVerticalScrollIndicator={false}
+            >
+              <AttendanceDetailRow icon="calendar-outline" label="Day" value={dayName} />
+              <AttendanceDetailRow icon="calendar-number-outline" label="Date" value={dateVal} />
+              <AttendanceDetailRow icon="log-in-outline" label="Check In" value={inVal} />
+              <AttendanceDetailRow icon="log-out-outline" label="Check Out" value={outVal} />
+              <AttendanceDetailRow icon="timer-outline" label="Working Hours" value={hoursVal} />
+              <AttendanceDetailRow icon="information-circle-outline" label="Status" value={statusLabel} />
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
     );
   };
 
@@ -1343,6 +1437,8 @@ export default function MyAttendanceScreen() {
           />
         }
       />
+
+      {renderAttendanceDetailsModal()}
 
       <Modal
         visible={isReasonModalVisible}
@@ -1797,6 +1893,85 @@ const styles = StyleSheet.create({
   statusBadgeText: {
     fontSize: fontSizes.sm,
     fontWeight: fontWeights.extraBold,
+  },
+  attendanceDetailsOverlay: {
+    flex: 1,
+    backgroundColor: colors.overlay,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: spacing.xl,
+  },
+  attendanceDetailsCard: {
+    maxHeight: '85%',
+    backgroundColor: colors.white,
+    borderRadius: radii.card,
+    overflow: 'hidden',
+    ...shadows.modal,
+  },
+  attendanceDetailsHeader: {
+    minHeight: 64,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.lg,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+    paddingLeft: spacing.xxl,
+    paddingRight: spacing.md,
+    paddingVertical: spacing.md,
+  },
+  attendanceDetailsTitle: {
+    flex: 1,
+    minWidth: 0,
+    color: colors.textPrimary,
+    fontSize: 18,
+    fontWeight: fontWeights.extraBold,
+  },
+  attendanceDetailsCloseButton: {
+    width: sizes.minTouchTarget,
+    height: sizes.minTouchTarget,
+    borderRadius: radii.pill,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.mutedBackground,
+  },
+  attendanceDetailsBody: {
+    padding: spacing.xxl,
+    gap: spacing.lg,
+  },
+  attendanceDetailRow: {
+    flexDirection: 'row',
+    gap: spacing.md,
+    alignItems: 'flex-start',
+    padding: spacing.lg,
+    borderRadius: radii.xl,
+    borderWidth: 1,
+    borderColor: colors.attendance.border,
+    backgroundColor: colors.attendance.surface,
+  },
+  attendanceDetailIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: radii.pill,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.tealTintSoft,
+  },
+  attendanceDetailCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: spacing.xs,
+  },
+  attendanceDetailLabel: {
+    color: colors.textSecondary,
+    fontSize: fontSizes.base,
+    fontWeight: fontWeights.extraBold,
+  },
+  attendanceDetailValue: {
+    color: colors.textPrimary,
+    fontSize: fontSizes.body,
+    fontWeight: fontWeights.semibold,
+    lineHeight: 21,
   },
   emptyState: {
     alignItems: 'center',

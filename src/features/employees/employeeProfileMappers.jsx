@@ -148,8 +148,11 @@ function text(value, fallback = '') {
 function collection(value) {
   if (Array.isArray(value)) return value;
   if (Array.isArray(value?.data)) return value.data;
+  if (Array.isArray(value?.agreements)) return value.agreements;
+  if (Array.isArray(value?.data?.agreements)) return value.data.agreements;
   if (Array.isArray(value?.items)) return value.items;
   if (Array.isArray(value?.records)) return value.records;
+  if (Array.isArray(value?.result)) return value.result;
   return [];
 }
 
@@ -413,27 +416,106 @@ export function normalizeDocumentChecklist(payload) {
 
 export function normalizeAgreements(payload) {
   return collection(unwrap(payload)).map((item) => {
-    const agreementId = item.agreementId || item.AgreementId || item.id;
+    const agreementId = item.agreementId || item.AgreementId || item.agreement_Id || item.Agreement_Id || item.id || item.Id;
     const employeeAgreementId =
       item.employeeAgreementId ||
       item.EmployeeAgreementId ||
-      item.signedEmployeeAgreementId ||
-      item.SignedEmployeeAgreementId ||
+      item.employeeAgreement_Id ||
+      item.EmployeeAgreement_Id ||
+      item.employeeAgreementID ||
+      item.EmployeeAgreementID ||
+      '';
+    const pendingEmployeeAgreementId =
       item.pendingEmployeeAgreementId ||
       item.PendingEmployeeAgreementId ||
-      agreementId;
+      item.pendingEmployeeAgreementID ||
+      item.PendingEmployeeAgreementID ||
+      '';
+    const signedEmployeeAgreementId =
+      item.signedEmployeeAgreementId ||
+      item.SignedEmployeeAgreementId ||
+      item.signedEmployeeAgreementID ||
+      item.SignedEmployeeAgreementID ||
+      '';
+    const lifecycleId =
+      employeeAgreementId ||
+      pendingEmployeeAgreementId ||
+      signedEmployeeAgreementId ||
+      agreementId ||
+      item.documentId ||
+      item.DocumentId ||
+      item.id ||
+      item.Id;
 
     return {
-      id: String(employeeAgreementId || agreementId || ''),
-      agreementId: String(agreementId || employeeAgreementId || ''),
+      raw: item,
+      id: String(lifecycleId || ''),
+      agreementId: String(agreementId || ''),
       employeeAgreementId: String(employeeAgreementId || ''),
+      pendingEmployeeAgreementId: String(pendingEmployeeAgreementId || ''),
+      signedEmployeeAgreementId: String(signedEmployeeAgreementId || ''),
+      documentId: text(item.documentId || item.DocumentId || item.document_Id || item.Document_Id),
       agreementType: text(item.agreementType || item.AgreementType || item.type),
-      agreementName: text(item.agreementName || item.AgreementName || item.name, 'Agreement'),
-      agreementCode: text(item.agreementCode || item.AgreementCode || item.code),
+      agreementName: text(item.agreementName || item.AgreementName || item.name || item.Name, 'Agreement'),
+      agreementCode: text(item.agreementCode || item.AgreementCode || item.code || item.Code),
       employeeId: text(item.employeeId || item.EmployeeId || item.employee_Id),
       status: text(item.status || item.Status, 'Pending'),
+      description: text(item.description || item.Description),
     };
   }).filter((item) => item.id || item.agreementId);
+}
+
+function agreementMatchKeys(item = {}) {
+  return [
+    item.agreementId,
+    item.agreementCode,
+    item.employeeAgreementId,
+    item.pendingEmployeeAgreementId,
+    item.signedEmployeeAgreementId,
+    item.documentId,
+  ]
+    .map((value) => text(value).toLowerCase())
+    .filter(Boolean);
+}
+
+function agreementRecordsMatch(left = {}, right = {}) {
+  const leftKeys = agreementMatchKeys(left);
+  const rightKeys = new Set(agreementMatchKeys(right));
+  return leftKeys.some((key) => rightKeys.has(key));
+}
+
+export function isAgreementSignedStatus(status) {
+  const normalized = text(status).toLowerCase();
+  return Boolean(normalized && !normalized.includes('unsigned') && normalized.includes('signed'));
+}
+
+export function mergeAgreementsWithLifecycle(templates = [], pending = [], signed = []) {
+  return templates.map((template) => {
+    const signedRecord = signed.find((item) => agreementRecordsMatch(template, item));
+    const pendingRecord = pending.find((item) => agreementRecordsMatch(template, item));
+    const lifecycle = signedRecord || pendingRecord || {};
+    const status = signedRecord
+      ? 'Signed'
+      : pendingRecord
+        ? 'Pending'
+        : text(template.status, 'Pending');
+
+    return {
+      ...template,
+      ...lifecycle,
+      id: template.agreementId || lifecycle.id || template.id || lifecycle.agreementId || template.agreementCode,
+      agreementId: template.agreementId || lifecycle.agreementId || '',
+      employeeAgreementId: lifecycle.employeeAgreementId || template.employeeAgreementId || '',
+      pendingEmployeeAgreementId: lifecycle.pendingEmployeeAgreementId || template.pendingEmployeeAgreementId || '',
+      signedEmployeeAgreementId: lifecycle.signedEmployeeAgreementId || template.signedEmployeeAgreementId || '',
+      documentId: lifecycle.documentId || template.documentId || '',
+      agreementName: template.agreementName || lifecycle.agreementName || 'Agreement',
+      agreementCode: template.agreementCode || lifecycle.agreementCode || '',
+      agreementType: template.agreementType || lifecycle.agreementType || '',
+      description: template.description || lifecycle.description || '',
+      status,
+    };
+  });
 }
 
 export function maskLastFour(value) {

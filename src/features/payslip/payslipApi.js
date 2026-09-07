@@ -1,6 +1,7 @@
 import * as FileSystem from 'expo-file-system/legacy';
 
 import { apiClient, buildApiUrl } from '../../services/apiClient';
+import { notifySessionExpired } from '../auth/sessionManager';
 
 const PAYSLIP_ENDPOINTS = {
   mine: '/api/PaySlip/my',
@@ -44,6 +45,65 @@ function resolveFileUrl(value) {
   return buildApiUrl(`/api/${url.replace(/^\/+/, '')}`);
 }
 
+function getPayslipHttpMessage(status) {
+  if (status === 401) return 'Your session has expired. Please sign in again.';
+  if (status === 403) return 'You do not have permission to access this payslip.';
+  if (status === 404) return 'This payslip PDF is not available yet.';
+  if (status >= 500) return 'The payslip service is temporarily unavailable. Please try again later.';
+  return 'Unable to download payslip. Please try again.';
+}
+
+function createPayslipHttpError(result, bodyText = '') {
+  const status = Number(result?.status || 0);
+  const dataMessage = (() => {
+    if (!bodyText) return '';
+    try {
+      const parsed = JSON.parse(bodyText);
+      return parsed?.message || parsed?.title || parsed?.error || parsed?.detail || '';
+    } catch {
+      return '';
+    }
+  })();
+  const mappedMessage = getPayslipHttpMessage(status);
+  const shouldUseMappedMessage =
+    status === 401 ||
+    status === 403 ||
+    status === 404 ||
+    status >= 500;
+  const error = new Error(shouldUseMappedMessage ? mappedMessage : dataMessage || mappedMessage);
+  error.status = status;
+  error.code = status === 401 ? 'SESSION_EXPIRED' : 'PAYSLIP_HTTP_ERROR';
+  error.contentType = String(getHeader(result?.headers, 'content-type') || '').toLowerCase();
+  error.responseBody = bodyText;
+
+  if (status === 401) {
+    notifySessionExpired('unauthorized');
+  }
+
+  return error;
+}
+
+function createPayslipNetworkError(error) {
+  const message = String(error?.message || '');
+  const isNetworkFailure =
+    /unable to resolve host/i.test(message) ||
+    /network request failed/i.test(message) ||
+    /enotfound/i.test(message) ||
+    /eai_again/i.test(message) ||
+    /no address associated with hostname/i.test(message);
+
+  if (!isNetworkFailure) {
+    return error;
+  }
+
+  const networkError = new Error(
+    'Unable to connect to the HRMS server. Please check your internet connection and try again.'
+  );
+  networkError.code = 'PAYSLIP_NETWORK_ERROR';
+  networkError.originalMessage = message;
+  return networkError;
+}
+
 async function deleteIfExists(uri) {
   try {
     await FileSystem.deleteAsync(uri, { idempotent: true });
@@ -52,7 +112,7 @@ async function deleteIfExists(uri) {
   }
 }
 
-async function validateDownloadedFile(result, token, filename) {
+async function validateDownloadedFile(result, token, filename, requestedDirectory) {
   const contentType = String(getHeader(result.headers, 'content-type')).toLowerCase();
   const dispositionName = getDispositionFilename(result.headers);
   const finalName = sanitizeFilename(dispositionName || filename);
@@ -87,7 +147,7 @@ async function validateDownloadedFile(result, token, filename) {
       throw new Error(parsed?.message || 'Payslip file was not returned by the server.');
     }
 
-    return downloadFileFromUrl(resolveFileUrl(fileUrl), token, finalName);
+    return downloadFileFromUrl(resolveFileUrl(fileUrl), token, finalName, requestedDirectory);
   }
 
   const fileInfo = await FileSystem.getInfoAsync(result.uri);
@@ -119,20 +179,36 @@ async function downloadFileFromUrl(url, token, filename, requestedDirectory = Fi
 
   await deleteIfExists(targetUri);
 
-  const result = await FileSystem.downloadAsync(url, targetUri, {
-    headers: {
-      Accept: 'application/pdf, application/json',
-      'ngrok-skip-browser-warning': 'true',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-  });
-
-  if (result.status < 200 || result.status >= 300) {
-    await deleteIfExists(result.uri);
-    throw new Error('Unable to download payslip. Please try again.');
+  let result;
+  try {
+    result = await FileSystem.downloadAsync(url, targetUri, {
+      headers: {
+        Accept: 'application/pdf, application/octet-stream, application/json',
+        'ngrok-skip-browser-warning': 'true',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    });
+  } catch (error) {
+    throw createPayslipNetworkError(error);
   }
 
-  return validateDownloadedFile(result, token, safeFilename);
+  if (result.status < 200 || result.status >= 300) {
+    const contentType = String(getHeader(result.headers, 'content-type')).toLowerCase();
+    let bodyText = '';
+    if (contentType.includes('json') || contentType.includes('text')) {
+      try {
+        bodyText = await FileSystem.readAsStringAsync(result.uri);
+      } catch {
+        bodyText = '';
+      }
+    }
+    await deleteIfExists(result.uri);
+    const error = createPayslipHttpError(result, bodyText);
+    error.url = url;
+    throw error;
+  }
+
+  return validateDownloadedFile(result, token, safeFilename, requestedDirectory);
 }
 
 export function getMyPayslips(token, options = {}) {
@@ -149,4 +225,11 @@ export function downloadPayslip(id, token, options = {}) {
   assertPayslipId(id);
   const filename = sanitizeFilename(options.filename || 'PIRNAV-Payslip.pdf');
   return downloadFileFromUrl(buildApiUrl(PAYSLIP_ENDPOINTS.download(id)), token, filename, FileSystem.documentDirectory);
+}
+
+export function getPayslipFileEndpoint(id, type) {
+  assertPayslipId(id);
+  if (type === 'preview') return PAYSLIP_ENDPOINTS.preview(id);
+  if (type === 'download') return PAYSLIP_ENDPOINTS.download(id);
+  throw new Error('Unsupported payslip action.');
 }
