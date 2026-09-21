@@ -15,6 +15,7 @@ export const ROUTES = {
   EMPLOYEES: 'Employees',
   EDIT_EMPLOYEE: 'EditEmployee',
   PAYSLIP: 'Payslip',
+  MY_TICKETS: 'MyTickets',
   TEAMS: 'Teams',
   TEAMS_FLOW: 'TeamsFlow',
   TEAM_DETAILS: 'TeamDetails',

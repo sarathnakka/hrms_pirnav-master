@@ -88,7 +88,8 @@ async function request(
   };
 
   const hasBody = body !== undefined && body !== null;
-  if (hasBody) {
+  const isFormData = typeof FormData !== 'undefined' && body instanceof FormData;
+  if (hasBody && !isFormData) {
     requestHeaders['Content-Type'] = 'application/json';
   }
 
@@ -100,7 +101,7 @@ async function request(
     const response = await fetch(buildUrl(endpoint), {
       method,
       headers: requestHeaders,
-      body: hasBody ? JSON.stringify(body) : undefined,
+      body: hasBody ? (isFormData ? body : JSON.stringify(body)) : undefined,
       signal: controller.signal,
     });
 

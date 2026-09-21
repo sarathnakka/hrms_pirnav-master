@@ -4,7 +4,12 @@ import { Ionicons } from '@expo/vector-icons';
 
 import { colors, fontSizes, fontWeights, radii, shadows, sizes, spacing } from '../../theme';
 
-const ALL_DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+const WORK_WEEK_DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
+
+function getInitials(name) {
+  const words = String(name || '').trim().split(/\s+/).filter(Boolean);
+  return words.slice(0, 2).map((word) => word[0].toUpperCase()).join('') || '--';
+}
 
 export function TeamsState({ title, message, actionLabel, onAction, loading = false }) {
   return (
@@ -32,12 +37,15 @@ export function TeamsState({ title, message, actionLabel, onAction, loading = fa
 }
 
 export function ReportingDayChips({ days = [] }) {
-  const activeDays = new Set(days);
+  const activeDays = new Set(
+    (Array.isArray(days) ? days : []).map((day) => String(day ?? '').trim().toLowerCase())
+  );
+  const displayedActiveDays = WORK_WEEK_DAYS.filter((day) => activeDays.has(day.toLowerCase()));
 
   return (
-    <View style={styles.dayGrid} accessibilityLabel={`Reporting days ${days.join(', ') || 'not available'}`}>
-      {ALL_DAYS.map((day) => {
-        const isActive = activeDays.has(day);
+    <View style={styles.dayGrid} accessibilityLabel={`Reporting days ${displayedActiveDays.join(', ') || 'not available'}`}>
+      {WORK_WEEK_DAYS.map((day) => {
+        const isActive = activeDays.has(day.toLowerCase());
         return (
           <View key={day} style={[styles.dayChip, isActive ? styles.dayChipActive : styles.dayChipInactive]}>
             <Text style={[styles.dayChipText, isActive ? styles.dayChipTextActive : styles.dayChipTextInactive]}>
@@ -73,7 +81,7 @@ export function TeamCard({ team, onPress, disabled = false }) {
       </View>
 
       <Text style={styles.teamName} numberOfLines={2}>{team.teamName}</Text>
-      <Text style={styles.teamHint}>{disabled ? 'Details unavailable' : 'Tap to view details'}</Text>
+      {disabled ? <Text style={styles.teamHint}>Details unavailable</Text> : null}
 
       <View style={styles.metaGroup}>
         <View style={styles.metaRow}>
@@ -128,9 +136,12 @@ export function MemberRow({ member }) {
       accessibilityLabel={`${member.name}, ${member.role}, employee ID ${member.employeeId}.`}
     >
       <View style={styles.memberHeader}>
+        <View style={styles.memberAvatar}>
+          <Text style={styles.memberAvatarText}>{getInitials(member.name)}</Text>
+        </View>
         <View style={styles.memberMain}>
-          <Text style={styles.memberName}>{member.name}</Text>
-          <Text style={styles.memberRole}>{member.role}</Text>
+          <Text style={styles.memberName} numberOfLines={1}>{member.name}</Text>
+          <Text style={styles.memberRole} numberOfLines={1}>{member.role}</Text>
           {member.isCrossTeam ? (
             <View style={styles.crossTeamBadge}>
               <Text style={styles.crossTeamText}>cross-team</Text>
@@ -138,14 +149,14 @@ export function MemberRow({ member }) {
           ) : null}
         </View>
         <View style={styles.employeeIdPill}>
-          <Text style={styles.employeeIdText}>{member.employeeId}</Text>
+          <Text style={styles.employeeIdText} numberOfLines={1}>{member.employeeId}</Text>
         </View>
       </View>
 
       {hasDetails ? (
         <View style={styles.memberDetails}>
-          {member.projectName !== '-' ? <Text style={styles.detailText}>Project: {member.projectName}</Text> : null}
-          {member.engagementType !== '-' ? <Text style={styles.detailText}>Engagement: {member.engagementType}</Text> : null}
+          {member.projectName !== '-' ? <Text style={styles.detailText} numberOfLines={1}>Project: {member.projectName}</Text> : null}
+          {member.engagementType !== '-' ? <Text style={styles.detailText} numberOfLines={1}>Engagement: {member.engagementType}</Text> : null}
           {member.wfoDays.length > 0 ? <Text style={styles.detailText}>WFO: {member.wfoDays.join(', ')}</Text> : null}
           {member.wfhDays.length > 0 ? <Text style={styles.detailText}>WFH: {member.wfhDays.join(', ')}</Text> : null}
         </View>
@@ -195,8 +206,8 @@ const styles = StyleSheet.create({
     borderColor: colors.teams.border,
     borderRadius: radii.compactCard,
     padding: spacing.xxl,
-    gap: spacing.lg,
-    ...shadows.dashboard,
+    gap: spacing.md,
+    ...shadows.subtle,
   },
   teamCardDisabled: {
     opacity: 0.72,
@@ -207,15 +218,14 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
   },
   teamNumberBadge: {
-    minWidth: 42,
-    minHeight: 42,
+    minHeight: 32,
     borderRadius: radii.pill,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: colors.teams.teamNumberBackground,
     borderWidth: 1,
     borderColor: colors.teams.border,
-    paddingHorizontal: spacing.md,
+    paddingHorizontal: spacing.lg,
   },
   teamNumberText: {
     color: colors.primary,
@@ -223,8 +233,8 @@ const styles = StyleSheet.create({
     fontWeight: fontWeights.extraBold,
   },
   arrowBadge: {
-    width: 42,
-    height: 42,
+    width: 32,
+    height: 32,
     borderRadius: radii.pill,
     alignItems: 'center',
     justifyContent: 'center',
@@ -234,7 +244,7 @@ const styles = StyleSheet.create({
     color: colors.textPrimary,
     fontSize: fontSizes.headerTitle,
     fontWeight: fontWeights.extraBold,
-    lineHeight: 24,
+    lineHeight: 23,
   },
   teamHint: {
     marginTop: -spacing.md,
@@ -243,12 +253,13 @@ const styles = StyleSheet.create({
     fontWeight: fontWeights.semibold,
   },
   metaGroup: {
-    gap: spacing.lg,
+    gap: spacing.md,
+    marginTop: spacing.xs,
   },
   metaRow: {
     flexDirection: 'row',
     alignItems: 'flex-start',
-    gap: spacing.lg,
+    gap: spacing.md,
   },
   metaTextWrap: {
     flex: 1,
@@ -268,16 +279,17 @@ const styles = StyleSheet.create({
   },
   dayGrid: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: spacing.md,
+    width: '100%',
+    gap: spacing.xs,
   },
   dayChip: {
-    minHeight: 34,
-    minWidth: 48,
+    flex: 1,
+    minHeight: 28,
+    minWidth: 0,
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: radii.pill,
-    paddingHorizontal: spacing.lg,
+    paddingHorizontal: spacing.sm,
     borderWidth: 1,
   },
   dayChipActive: {
@@ -303,6 +315,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: spacing.md,
+    marginTop: spacing.xs,
   },
   footerLabel: {
     flex: 1,
@@ -324,15 +337,13 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.lg,
-    padding: spacing.lg,
-    borderRadius: radii.lg,
-    borderWidth: 1,
-    borderColor: colors.teams.border,
-    backgroundColor: colors.teams.summarySurface,
+    paddingVertical: spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.teams.rowDivider,
   },
   summaryIcon: {
-    width: 38,
-    height: 38,
+    width: 32,
+    height: 32,
     borderRadius: radii.lg,
     alignItems: 'center',
     justifyContent: 'center',
@@ -355,15 +366,30 @@ const styles = StyleSheet.create({
     lineHeight: 20,
   },
   memberRow: {
-    paddingVertical: spacing.xxl,
-    paddingHorizontal: spacing.xxl,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.teams.rowDivider,
+    padding: spacing.lg,
+    borderWidth: 1,
+    borderColor: colors.teams.border,
+    borderRadius: radii.compactCard,
+    backgroundColor: colors.teams.surface,
+    ...shadows.subtle,
   },
   memberHeader: {
     flexDirection: 'row',
     alignItems: 'flex-start',
-    gap: spacing.lg,
+    gap: spacing.md,
+  },
+  memberAvatar: {
+    width: 38,
+    height: 38,
+    borderRadius: radii.pill,
+    backgroundColor: colors.teams.teamNumberBackground,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  memberAvatarText: {
+    color: colors.primary,
+    fontSize: fontSizes.base,
+    fontWeight: fontWeights.extraBold,
   },
   memberMain: {
     flex: 1,
@@ -394,10 +420,11 @@ const styles = StyleSheet.create({
     fontWeight: fontWeights.extraBold,
   },
   employeeIdPill: {
-    minHeight: 32,
+    maxWidth: '32%',
+    minHeight: 28,
     justifyContent: 'center',
     borderRadius: radii.pill,
-    paddingHorizontal: spacing.lg,
+    paddingHorizontal: spacing.md,
     backgroundColor: colors.teams.employeeIdBackground,
   },
   employeeIdText: {
@@ -406,7 +433,8 @@ const styles = StyleSheet.create({
     fontWeight: fontWeights.extraBold,
   },
   memberDetails: {
-    marginTop: spacing.lg,
+    marginTop: spacing.sm,
+    marginLeft: 38 + spacing.md,
     gap: spacing.xs,
   },
   detailText: {

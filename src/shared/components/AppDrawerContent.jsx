@@ -21,6 +21,7 @@ const DRAWER_ITEMS = [
     ],
   },
   { label: 'Payslip', icon: 'receipt-outline', tab: ROUTES.PAYSLIP },
+  { label: 'My Tickets', icon: 'ticket-outline', tab: ROUTES.MY_TICKETS },
   { label: 'My Attendance', icon: 'time-outline', tab: ROUTES.MY_ATTENDANCE },
   { label: 'Teams', icon: 'people-circle-outline', tab: ROUTES.TEAMS_FLOW, nestedScreen: ROUTES.TEAMS },
   { label: 'Employee Leaves', icon: 'document-text-outline', tab: ROUTES.EMPLOYEE_LEAVES },

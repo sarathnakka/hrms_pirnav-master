@@ -360,7 +360,6 @@ export default function MyAttendanceScreen() {
   const todayRequestIdRef = useRef(0);
   const activeTabRef = useRef(activeTab);
   const reasonSubmissionLockRef = useRef(false);
-  const checkoutReasonAttemptIdRef = useRef(null);
   const attendanceMutationGuardRef = useRef(null);
 
   const effectiveCheckInStartTime =
@@ -507,18 +506,6 @@ export default function MyAttendanceScreen() {
 
       const todayRecord = findTodayRecordFromCurrentWeek(res.data, new Date());
 
-      // if (__DEV__) {
-      //   console.log('[Attendance Today from Week]', {
-      //     found: Boolean(todayRecord),
-      //     isToday: todayRecord?.isToday,
-      //     day: todayRecord?.day,
-      //     date: todayRecord?.date ?? todayRecord?.attendanceDate,
-      //     checkIn: todayRecord?.checkIn ?? todayRecord?.checkInTime,
-      //     checkOut: todayRecord?.checkOut ?? todayRecord?.checkOutTime,
-      //     hours: todayRecord?.hours ?? todayRecord?.totalHours,
-      //   });
-      // }
-
       if (!todayRecord) {
         if (clearExpiredAttendanceMutationGuard(new Date())) {
           setTodayError('');
@@ -606,7 +593,6 @@ export default function MyAttendanceScreen() {
     setLastCapturedLocation(null);
     setReasonSubmissionError('');
     setReasonSubmissionState(REASON_SUBMISSION_STATE.IDLE);
-    checkoutReasonAttemptIdRef.current = null;
   }, []);
 
   const verifyCheckoutRecorded = useCallback(async ({ attempts = 3, delayMs = 1500 } = {}) => {
@@ -680,7 +666,6 @@ export default function MyAttendanceScreen() {
       setLastCapturedLocation(null);
       setReasonSubmissionError('');
       setReasonSubmissionState(REASON_SUBMISSION_STATE.COMPLETED);
-      checkoutReasonAttemptIdRef.current = null;
       releaseReasonSubmissionLock();
 
       Alert.alert(
@@ -954,8 +939,6 @@ export default function MyAttendanceScreen() {
           loadHistoryData(activeTab, { silent: true }),
         ]);
       } else if (res.requiresReason) {
-        checkoutReasonAttemptIdRef.current =
-          `checkout-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
         setReasonSubmissionError('');
         setReasonSubmissionState(REASON_SUBMISSION_STATE.IDLE);
         setIsReasonModalVisible(true);
@@ -986,7 +969,6 @@ export default function MyAttendanceScreen() {
       setLastCapturedLocation(null);
       setReasonSubmissionError('');
       setReasonSubmissionState(REASON_SUBMISSION_STATE.COMPLETED);
-      checkoutReasonAttemptIdRef.current = null;
       Alert.alert('Already Checked Out', 'Your checkout has already been recorded.');
       return;
     }
@@ -1015,13 +997,6 @@ export default function MyAttendanceScreen() {
       ...lastCapturedLocation,
       locationChangeReason: trimmedReason,
     };
-
-    if (__DEV__) {
-      console.log('[Attendance checkout reason]', {
-        attemptId: checkoutReasonAttemptIdRef.current,
-        phase: 'submit-start',
-      });
-    }
 
     let shouldReleaseLock = true;
 

@@ -32,7 +32,13 @@
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
-      "@react-native-community/datetimepicker"
+      "@react-native-community/datetimepicker",
+      [
+        "expo-image-picker",
+        {
+          "cameraPermission": "Allow PIRNAV HRMS to use the camera to capture employee documents."
+        }
+      ]
     ],
     "extra": {
       "eas": {

@@ -172,7 +172,7 @@ export function normalizeMember(member, teamFallback = {}) {
     member?.id
   );
   const wfoDays = normalizeReportingDays(
-    member?.overrideWfoDays ?? member?.wfoDays ?? member?.reportingDays ?? teamFallback.reportingDays
+    member?.overrideWfoDays ?? member?.wfoDays ?? member?.reportingDays
   );
   const wfhDays = normalizeReportingDays(member?.overrideWfhDays ?? member?.wfhDays);
   const explicitCrossTeam = member?.crossTeam ?? member?.isCrossTeam ?? member?.isCrossMapped;
@@ -215,7 +215,6 @@ export function normalizeTeam(rawTeam = {}, index = 0) {
     id,
     projectName: display(rawTeam.projectName ?? rawTeam.project ?? rawTeam.assignedProject ?? rawTeam.projectTitle),
     engagementType: display(rawTeam.engagementType ?? rawTeam.engagement ?? rawTeam.projectType ?? rawTeam.type),
-    reportingDays,
   };
   const members = rawMembers(rawTeam).map((member) => normalizeMember(member, fallback));
   const employeeNames = rawEmployeeNames(rawTeam);
@@ -248,6 +247,7 @@ export function normalizeTeam(rawTeam = {}, index = 0) {
   };
 
   team.searchText = [
+    team.id,
     team.teamNumber,
     team.teamName,
     team.reportingManager,
@@ -265,6 +265,13 @@ export function normalizeTeam(rawTeam = {}, index = 0) {
 
 export function normalizeTeams(payload) {
   return extractTeamCollection(payload).map(normalizeTeam);
+}
+
+export function normalizeMyTeam(payload) {
+  const team = extractTeamObject(payload);
+  if (!team || resolveId(team.teamId, team.id, team.team_Id, team.teamID) === null) return null;
+  const normalized = normalizeTeam(team);
+  return { ...normalized, memberCount: normalized.members.length };
 }
 
 export function normalizeTeamDetails(payload, initialTeam = null) {

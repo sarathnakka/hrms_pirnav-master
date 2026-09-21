@@ -7,38 +7,32 @@ import {
   View,
   useWindowDimensions,
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useAuth } from '../auth/AuthContext';
 import { colors, fontSizes, fontWeights, lineHeights, radii, shadows, sizes, spacing } from '../../theme';
 import { MemberRow, ReportingDayChips, SummaryRow, TeamsState } from './TeamsComponents';
-import { getTeamById } from './teamsApi';
-import { normalizeTeamDetails } from './teamMappers';
+import { getMyTeam } from './teamsApi';
+import { normalizeMyTeam } from './teamMappers';
 
 export default function TeamDetailsScreen({ route }) {
   const { token } = useAuth();
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const abortRef = useRef(null);
-  const teamId = route?.params?.teamId;
+  const initialTokenRef = useRef(token);
   const initialTeam = route?.params?.initialTeam || null;
-  const [team, setTeam] = useState(initialTeam);
+  const [teamResult, setTeamResult] = useState({ token, team: initialTeam });
   const [loading, setLoading] = useState(!initialTeam);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
 
   const contentWidth = Math.min(Math.max(width - spacing.screen * 2, 288), 680);
+  const team = teamResult.token === token ? teamResult.team : null;
+  const isLoading = loading || teamResult.token !== token;
   const members = useMemo(() => team?.members || [], [team]);
 
   const loadTeamDetails = useCallback(async ({ refresh = false } = {}) => {
-    if (!teamId) {
-      setError('Team details are unavailable.');
-      setLoading(false);
-      setRefreshing(false);
-      return;
-    }
-
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
@@ -47,18 +41,22 @@ export default function TeamDetailsScreen({ route }) {
       setRefreshing(true);
     } else {
       setLoading(true);
+      setTeamResult({ token, team: null });
     }
     setError('');
 
     try {
-      const response = await getTeamById(teamId, token, { signal: controller.signal });
-      const normalizedTeam = normalizeTeamDetails(response, initialTeam);
+      const response = await getMyTeam(token, { signal: controller.signal });
       if (!controller.signal.aborted) {
-        setTeam(normalizedTeam);
+        setTeamResult({ token, team: normalizeMyTeam(response) });
       }
     } catch (requestError) {
       if (!controller.signal.aborted) {
-        setError(requestError?.message || 'Unable to load team details.');
+        if (requestError?.status === 404 || requestError?.status === 204) {
+          setTeamResult({ token, team: null });
+        } else {
+          setError(requestError?.message || 'Unable to load team details.');
+        }
       }
     } finally {
       if (!controller.signal.aborted) {
@@ -66,30 +64,33 @@ export default function TeamDetailsScreen({ route }) {
         setRefreshing(false);
       }
     }
-  }, [initialTeam, teamId, token]);
+  }, [token]);
 
   useEffect(() => {
-    loadTeamDetails();
+    if (!initialTeam || initialTokenRef.current !== token) {
+      loadTeamDetails();
+    }
     return () => abortRef.current?.abort();
-  }, [loadTeamDetails]);
+  }, [initialTeam, loadTeamDetails, token]);
 
   const renderHeader = () => (
     <View style={[styles.headerContent, { width: contentWidth }]}>
       {team ? (
         <>
           <View style={styles.summaryCard}>
-            <View style={styles.kickerBadge}>
+            <View style={styles.summaryTopRow}>
               <Text style={styles.kickerText}>Team Summary</Text>
+              <View style={styles.teamNumberBadge}>
+                <Text style={styles.teamNumberText}>{team.teamNumber}</Text>
+              </View>
             </View>
             <Text style={styles.teamName} accessibilityRole="header">{team.teamName}</Text>
             <Text style={styles.description}>Members, project alignment and reporting setup.</Text>
 
             <View style={styles.summaryList}>
-              <SummaryRow label="Team Number" value={team.teamNumber} icon="albums-outline" />
               <SummaryRow label="Reporting Manager" value={team.reportingManager} icon="person-outline" />
               <SummaryRow label="Project Name" value={team.projectName} icon="git-network-outline" />
               <SummaryRow label="Engagement Type" value={team.engagementType} icon="briefcase-outline" />
-              <SummaryRow label="Total Members" value={String(team.memberCount)} icon="people-outline" />
             </View>
 
             <View style={styles.reportingBlock}>
@@ -98,24 +99,11 @@ export default function TeamDetailsScreen({ route }) {
             </View>
           </View>
 
-          <View style={styles.countCard}>
-            <View style={styles.countTextBlock}>
-              <Text style={styles.countLabel}>Members Count</Text>
-              <Text style={styles.countValue}>{team.memberCount}</Text>
-              <Text style={styles.countDescription}>
-                Employees currently assigned to {team.teamName}.
-              </Text>
-            </View>
-            <View style={styles.countIcon}>
-              <Ionicons name="people" size={24} color={colors.primary} />
-            </View>
-          </View>
-
           <View style={styles.membersHeader}>
             <Text style={styles.membersTitle}>Members</Text>
-            <Text style={styles.membersSubtitle}>
-              Project alignment, reporting days and member information.
-            </Text>
+            <View style={styles.membersCountBadge}>
+              <Text style={styles.membersCountText}>{team.memberCount} {team.memberCount === 1 ? 'member' : 'members'}</Text>
+            </View>
           </View>
         </>
       ) : null}
@@ -123,7 +111,7 @@ export default function TeamDetailsScreen({ route }) {
   );
 
   const renderEmpty = () => {
-    if (loading) {
+    if (isLoading) {
       return (
         <View style={[styles.stateWrap, { width: contentWidth }]}>
           <TeamsState title="Loading team details" message="Fetching the latest members and reporting setup." loading />
@@ -147,8 +135,8 @@ export default function TeamDetailsScreen({ route }) {
     return (
       <View style={[styles.stateWrap, { width: contentWidth }]}>
         <TeamsState
-          title="No team members"
-          message={team ? `${team.teamName} does not have assigned members yet.` : 'Team details were not found.'}
+          title={team ? 'No team members' : 'No team assigned'}
+          message={team ? `${team.teamName} does not have assigned members yet.` : 'You are not currently assigned to a team.'}
         />
       </View>
     );
@@ -162,7 +150,8 @@ export default function TeamDetailsScreen({ route }) {
 
   return (
     <FlatList
-      data={error ? [] : members}
+      style={styles.list}
+      data={isLoading || error ? [] : members}
       keyExtractor={(item) => String(item.id)}
       renderItem={renderMember}
       ListHeaderComponent={renderHeader}
@@ -173,7 +162,7 @@ export default function TeamDetailsScreen({ route }) {
           paddingBottom: insets.bottom + sizes.floatingTabHeight + spacing.screenVertical,
         },
       ]}
-      ItemSeparatorComponent={null}
+      ItemSeparatorComponent={() => <View style={styles.memberSeparator} />}
       refreshControl={
         <RefreshControl
           refreshing={refreshing}
@@ -189,36 +178,50 @@ export default function TeamDetailsScreen({ route }) {
 }
 
 const styles = StyleSheet.create({
+  list: {
+    flex: 1,
+    backgroundColor: colors.teams.background,
+  },
   listContent: {
+    flexGrow: 1,
     alignItems: 'center',
     padding: spacing.screen,
     backgroundColor: colors.teams.background,
   },
   headerContent: {
     maxWidth: 680,
-    gap: spacing.sectionGap,
+    gap: spacing.md,
   },
   summaryCard: {
-    gap: spacing.xxl,
+    gap: spacing.md,
     padding: spacing.xxl,
     borderRadius: radii.compactCard,
     backgroundColor: colors.teams.surface,
     borderWidth: 1,
     borderColor: colors.teams.border,
-    ...shadows.dashboard,
+    ...shadows.subtle,
   },
-  kickerBadge: {
-    alignSelf: 'flex-start',
+  summaryTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.md,
+  },
+  teamNumberBadge: {
     borderRadius: radii.pill,
-    paddingHorizontal: spacing.xxl,
-    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.sm,
     backgroundColor: colors.teams.countBadgeBackground,
+  },
+  teamNumberText: {
+    color: colors.primary,
+    fontSize: fontSizes.base,
+    fontWeight: fontWeights.extraBold,
   },
   kickerText: {
     color: colors.primary,
     fontSize: fontSizes.sm,
     fontWeight: fontWeights.extraBold,
-    letterSpacing: 1,
     textTransform: 'uppercase',
   },
   teamName: {
@@ -228,14 +231,13 @@ const styles = StyleSheet.create({
     lineHeight: lineHeights.title,
   },
   description: {
-    marginTop: -spacing.md,
     color: colors.textSecondary,
     fontSize: fontSizes.body,
     lineHeight: lineHeights.body,
     fontWeight: fontWeights.medium,
   },
   summaryList: {
-    gap: spacing.lg,
+    marginTop: spacing.sm,
   },
   reportingBlock: {
     gap: spacing.md,
@@ -245,63 +247,31 @@ const styles = StyleSheet.create({
     fontSize: fontSizes.base,
     fontWeight: fontWeights.extraBold,
   },
-  countCard: {
-    minHeight: 132,
+  membersHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    gap: spacing.xxl,
-    padding: spacing.xxl,
-    borderRadius: radii.compactCard,
-    backgroundColor: colors.teams.surface,
-    borderWidth: 1,
-    borderColor: colors.teams.border,
-    ...shadows.dashboard,
-  },
-  countTextBlock: {
-    flex: 1,
-    minWidth: 0,
-  },
-  countLabel: {
-    color: colors.textSecondary,
-    fontSize: fontSizes.base,
-    fontWeight: fontWeights.extraBold,
-    textTransform: 'uppercase',
-  },
-  countValue: {
-    marginTop: spacing.sm,
-    color: colors.textPrimary,
-    fontSize: 32,
-    fontWeight: fontWeights.extraBold,
-  },
-  countDescription: {
-    marginTop: spacing.lg,
-    color: colors.textSecondary,
-    fontSize: fontSizes.body,
-    lineHeight: lineHeights.body,
-  },
-  countIcon: {
-    width: 56,
-    height: 56,
-    borderRadius: radii.xxl,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: colors.teams.membersCountBackground,
-  },
-  membersHeader: {
-    gap: spacing.sm,
-    paddingTop: spacing.lg,
+    gap: spacing.md,
+    paddingTop: spacing.md,
   },
   membersTitle: {
     color: colors.textPrimary,
     fontSize: fontSizes.dashboardSectionTitle,
     fontWeight: fontWeights.extraBold,
   },
-  membersSubtitle: {
-    color: colors.textSecondary,
-    fontSize: fontSizes.body,
-    lineHeight: lineHeights.body,
-    fontWeight: fontWeights.medium,
+  membersCountBadge: {
+    borderRadius: radii.pill,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.sm,
+    backgroundColor: colors.teams.membersCountBackground,
+  },
+  membersCountText: {
+    color: colors.primary,
+    fontSize: fontSizes.base,
+    fontWeight: fontWeights.bold,
+  },
+  memberSeparator: {
+    height: spacing.md,
   },
   stateWrap: {
     maxWidth: 680,

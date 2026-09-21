@@ -10,6 +10,7 @@ import MyHolidaysScreen from '../../features/holidays/MyHolidaysScreen';
 import NotificationsScreen from '../../features/notifications/NotificationsScreen';
 import PayslipScreen from '../../features/payslip/PayslipScreen';
 import ProfileScreen from '../../features/profile/ProfileScreen';
+import MyTicketsScreen from '../../features/tickets/MyTicketsScreen';
 import TeamDetailsScreen from '../../features/teams/TeamDetailsScreen';
 import TeamsScreen from '../../features/teams/TeamsScreen';
 import AppHeader from '../../shared/components/AppHeader';
@@ -26,6 +27,7 @@ function getTabTitle(routeName) {
   if (routeName === ROUTES.EMPLOYEE_LEAVES) return 'Employee Leaves';
   if (routeName === ROUTES.EDIT_EMPLOYEE) return 'Edit Employee';
   if (routeName === ROUTES.MY_HOLIDAYS) return 'My Holidays';
+  if (routeName === ROUTES.MY_TICKETS) return 'My Tickets';
   return routeName;
 }
 
@@ -128,6 +130,15 @@ export default function AppTabNavigator() {
           options={{
             title: 'Payslip',
             tabBarLabel: 'Payslip',
+            tabBarButton: () => null,
+          }}
+        />
+        <Tab.Screen
+          name={ROUTES.MY_TICKETS}
+          component={MyTicketsScreen}
+          options={{
+            title: 'My Tickets',
+            tabBarLabel: 'My Tickets',
             tabBarButton: () => null,
           }}
         />

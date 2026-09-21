@@ -2,6 +2,8 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   Alert,
+  Image,
+  Linking,
   Modal,
   KeyboardAvoidingView,
   Platform,
@@ -15,6 +17,8 @@ import {
 import DateTimePicker from '@react-native-community/datetimepicker';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
+import * as ImageManipulator from 'expo-image-manipulator';
+import * as ImagePicker from 'expo-image-picker';
 import * as IntentLauncher from 'expo-intent-launcher';
 import * as Sharing from 'expo-sharing';
 import { Ionicons } from '@expo/vector-icons';
@@ -76,10 +80,21 @@ import {
   viewEmployeeDocument,
   viewSignedAgreementDocument,
 } from './employeeProfileApi';
+import { validateEmployeeDocument } from './documentOcrValidation';
+import DocumentValidationWebView from './DocumentValidationWebView';
 
-const MAX_DOCUMENT_SIZE = 3 * 1024 * 1024;
-const MAX_SIGNATURE_SIZE = 10 * 1024 * 1024;
+const MAX_DOCUMENT_SIZE = 500 * 1024;
+const TARGET_CAPTURE_SIZE = 470 * 1024;
+const MAX_SIGNATURE_SIZE = 500 * 1024;
 const SUPPORTED_FILE_TYPES = ['application/pdf', 'image/jpeg', 'image/jpg', 'image/png'];
+const CAMERA_CAPTURE_DIRECTORY = `${FileSystem.cacheDirectory || ''}employee-document-captures/`;
+const CAMERA_COMPRESSION_STRATEGIES = [
+  { longEdge: 1800, quality: 0.82 },
+  { longEdge: 1600, quality: 0.74 },
+  { longEdge: 1500, quality: 0.68 },
+  { longEdge: 1400, quality: 0.62 },
+  { longEdge: 1250, quality: 0.58 },
+];
 const DOCUMENT_LABELS = {
   '10th Certificate': '10th Certificate',
   'Intermediate / 12th Certificate': 'Intermediate / 12th Certificate',
@@ -94,6 +109,13 @@ const DOCUMENT_LABELS = {
   'Payslip Month 1': 'Payslip - Month 1',
   'Payslip Month 2': 'Payslip - Month 2',
   'Payslip Month 3': 'Payslip - Month 3',
+};
+const INITIAL_DOCUMENT_VALIDATION = {
+  status: 'idle',
+  title: '',
+  message: '',
+  fileKey: '',
+  documentType: '',
 };
 
 function normalizeDocumentType(value) {
@@ -130,6 +152,184 @@ function isSupportedDocumentFile(file = {}) {
     SUPPORTED_FILE_TYPES.includes(mimeType) ||
     ['pdf', 'jpg', 'jpeg', 'png'].includes(extension)
   );
+}
+
+function isImageDocumentFile(file = {}) {
+  const extension = getFileExtension(file);
+  const mimeType = String(file.mimeType || file.type || '').toLowerCase();
+  return mimeType.startsWith('image/') || ['jpg', 'jpeg', 'png'].includes(extension);
+}
+
+function sanitizeCaptureFilePart(value, fallback = 'document-capture') {
+  const normalized = String(value || '')
+    .replace(/[/\\?%*:|"<>]/g, '-')
+    .replace(/[^A-Za-z0-9._ -]/g, '')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .trim();
+  return normalized || fallback;
+}
+
+function getCaptureTimestamp(date = new Date()) {
+  const pad = (value) => String(value).padStart(2, '0');
+  return [
+    date.getFullYear(),
+    pad(date.getMonth() + 1),
+    pad(date.getDate()),
+    '-',
+    pad(date.getHours()),
+    pad(date.getMinutes()),
+    pad(date.getSeconds()),
+  ].join('');
+}
+
+function getDocumentCaptureFilename(documentTypeValue) {
+  return `${sanitizeCaptureFilePart(getFriendlyDocumentLabel(documentTypeValue))}-${getCaptureTimestamp()}.jpg`;
+}
+
+function getDocumentValidationType(value) {
+  const normalized = String(value || '').trim();
+  if (normalized === 'Post-Graduation Certificate') return 'Post Graduation Certificate';
+  if (normalized === 'Passport-size Photo') return 'Passport Size Photo';
+  if (normalized === 'Payslip - Month 1') return 'Payslip Month 1';
+  if (normalized === 'Payslip - Month 2') return 'Payslip Month 2';
+  if (normalized === 'Payslip - Month 3') return 'Payslip Month 3';
+  return normalized;
+}
+
+function getDocumentFileKey(file = {}) {
+  if (!file) return '';
+  return [
+    file.uri || '',
+    file.name || file.fileName || '',
+    file.size || '',
+    file.mimeType || file.type || '',
+  ].join('|');
+}
+
+function getResizeAction(asset = {}, longEdge) {
+  const width = Number(asset.width);
+  const height = Number(asset.height);
+
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    return { resize: { width: longEdge } };
+  }
+
+  if (Math.max(width, height) <= longEdge) {
+    return null;
+  }
+
+  return width >= height
+    ? { resize: { width: longEdge } }
+    : { resize: { height: longEdge } };
+}
+
+async function ensureCameraCaptureDirectory() {
+  if (!CAMERA_CAPTURE_DIRECTORY) {
+    throw new Error('A writable image cache is unavailable.');
+  }
+
+  await FileSystem.makeDirectoryAsync(CAMERA_CAPTURE_DIRECTORY, { intermediates: true });
+}
+
+async function getLocalFileSize(uri) {
+  const info = await FileSystem.getInfoAsync(uri);
+  return info.exists ? Number(info.size || 0) : 0;
+}
+
+async function safeDeleteCameraFile(fileOrUri) {
+  const uri = typeof fileOrUri === 'string' ? fileOrUri : fileOrUri?.uri;
+  const isAppCapture =
+    uri &&
+    CAMERA_CAPTURE_DIRECTORY &&
+    uri.startsWith(CAMERA_CAPTURE_DIRECTORY);
+
+  if (!isAppCapture) return;
+
+  try {
+    await FileSystem.deleteAsync(uri, { idempotent: true });
+  } catch {
+    // Best-effort cleanup only; never block the employee flow.
+  }
+}
+
+async function compressCapturedDocument(asset, documentTypeValue, filename = getDocumentCaptureFilename(documentTypeValue)) {
+  if (!asset?.uri) {
+    throw new Error('The captured image was not returned by the camera.');
+  }
+
+  await ensureCameraCaptureDirectory();
+
+  const finalUri = `${CAMERA_CAPTURE_DIRECTORY}${filename}`;
+  await FileSystem.deleteAsync(finalUri, { idempotent: true });
+
+  let smallestCandidate = null;
+
+  for (const strategy of CAMERA_COMPRESSION_STRATEGIES) {
+    const resizeAction = getResizeAction(asset, strategy.longEdge);
+    const actions = resizeAction ? [resizeAction] : [];
+    const processed = await ImageManipulator.manipulateAsync(asset.uri, actions, {
+      compress: strategy.quality,
+      format: ImageManipulator.SaveFormat.JPEG,
+    });
+    const size = await getLocalFileSize(processed.uri);
+
+    if (size <= TARGET_CAPTURE_SIZE) {
+      await FileSystem.copyAsync({ from: processed.uri, to: finalUri });
+      await FileSystem.deleteAsync(processed.uri, { idempotent: true });
+      if (smallestCandidate?.uri) {
+        await FileSystem.deleteAsync(smallestCandidate.uri, { idempotent: true });
+      }
+      const finalSize = await getLocalFileSize(finalUri);
+
+      if (finalSize <= MAX_DOCUMENT_SIZE) {
+        return {
+          uri: finalUri,
+          name: filename,
+          mimeType: 'image/jpeg',
+          type: 'image/jpeg',
+          size: finalSize,
+          source: 'camera',
+          appOwned: true,
+        };
+      }
+    }
+
+    if (!smallestCandidate || size < smallestCandidate.size) {
+      if (smallestCandidate?.uri) {
+        await FileSystem.deleteAsync(smallestCandidate.uri, { idempotent: true });
+      }
+      smallestCandidate = { uri: processed.uri, size };
+    } else {
+      await FileSystem.deleteAsync(processed.uri, { idempotent: true });
+    }
+  }
+
+  if (smallestCandidate?.uri && smallestCandidate.size <= MAX_DOCUMENT_SIZE) {
+    await FileSystem.copyAsync({ from: smallestCandidate.uri, to: finalUri });
+    await FileSystem.deleteAsync(smallestCandidate.uri, { idempotent: true });
+    const finalSize = await getLocalFileSize(finalUri);
+
+    if (finalSize <= MAX_DOCUMENT_SIZE) {
+      return {
+        uri: finalUri,
+        name: filename,
+        mimeType: 'image/jpeg',
+        type: 'image/jpeg',
+        size: finalSize,
+        source: 'camera',
+        appOwned: true,
+      };
+    }
+  }
+
+  if (smallestCandidate?.uri) {
+    await FileSystem.deleteAsync(smallestCandidate.uri, { idempotent: true });
+  }
+  await FileSystem.deleteAsync(finalUri, { idempotent: true });
+
+  throw new Error('The captured image could not be reduced below the 500 KB document limit while keeping it readable. Please retake the photo from a little farther away or upload an existing compressed image.');
 }
 
 function delay(ms) {
@@ -296,7 +496,7 @@ function OptionField({ label, value, options, onChange, error, disabled = false 
               accessibilityState={{ selected, disabled }}
               accessibilityLabel={`${label}: ${option}`}
             >
-              <Text style={[styles.optionText, selected && styles.optionTextActive]}>{option}</Text>
+              <Text style={[styles.optionText, selected && styles.optionTextActive, disabled && styles.readOnlyValue]}>{option}</Text>
             </TouchableOpacity>
           );
         })}
@@ -347,7 +547,7 @@ function SelectionField({ label, value, options, onChange, error, placeholder = 
         accessibilityState={{ disabled }}
         accessibilityLabel={`${label}. ${selected?.label || placeholder}`}
       >
-        <Text style={[styles.selectFieldText, !selected && styles.placeholderText]} numberOfLines={1}>
+        <Text style={[styles.selectFieldText, disabled && selected && styles.readOnlyValue, !selected && styles.placeholderText]} numberOfLines={1}>
           {selected?.label || placeholder}
         </Text>
         <Ionicons name="chevron-down" size={18} color={colors.primary} />
@@ -437,7 +637,7 @@ function DateField({ label, value, onChange, error, disabled = false }) {
         accessibilityState={{ disabled }}
         accessibilityLabel={label}
       >
-        <Text style={[styles.dateText, !value && styles.placeholderText]}>
+        <Text style={[styles.dateText, disabled && value && styles.readOnlyValue, !value && styles.placeholderText]}>
           {value ? formatDisplayDate(value) : 'Select date'}
         </Text>
         <Ionicons name="calendar-outline" size={20} color={colors.primary} />
@@ -588,8 +788,16 @@ export default function EditEmployeeScreen({ navigation }) {
   const [agreementLoading, setAgreementLoading] = useState(false);
   const [agreementError, setAgreementError] = useState('');
   const [documentError, setDocumentError] = useState('');
+  const [documentValidation, setDocumentValidation] = useState(INITIAL_DOCUMENT_VALIDATION);
+  const [isValidationMessageDismissed, setIsValidationMessageDismissed] = useState(false);
+  const [isValidatingDocument, setIsValidatingDocument] = useState(false);
   const [checklistError, setChecklistError] = useState('');
   const [fileAction, setFileAction] = useState('');
+  const [capturePreviewFile, setCapturePreviewFile] = useState(null);
+  const [signatureCapturePreview, setSignatureCapturePreview] = useState(null);
+  const [isPreparingSignature, setIsPreparingSignature] = useState(false);
+  const [isCapturingDocument, setIsCapturingDocument] = useState(false);
+  const [isPreparingCapture, setIsPreparingCapture] = useState(false);
   const [errors, setErrors] = useState({});
   const [apiError, setApiError] = useState('');
   const [success, setSuccess] = useState('');
@@ -598,8 +806,15 @@ export default function EditEmployeeScreen({ navigation }) {
   const [isEditMode, setIsEditMode] = useState(false);
   const [completedStepIndexes, setCompletedStepIndexes] = useState([]);
   const uploadLockRef = useRef(false);
+  const validationLockRef = useRef(false);
+  const validationRequestRef = useRef(0);
+  const documentValidatorRef = useRef(null);
+  const cameraActionLockRef = useRef(false);
+  const signatureCameraLockRef = useRef(false);
   const agreementActionLockRef = useRef(false);
   const agreementSubmissionLockRef = useRef(false);
+  const selectedFileRef = useRef(null);
+  const capturePreviewRef = useRef(null);
   const mountedRef = useRef(true);
 
   const documentTypeOptions = useMemo(() => {
@@ -627,6 +842,13 @@ export default function EditEmployeeScreen({ navigation }) {
     })),
     [agreements]
   );
+  const selectedFileKey = useMemo(() => getDocumentFileKey(selectedFile), [selectedFile]);
+  const validationDocumentType = useMemo(() => getDocumentValidationType(documentType), [documentType]);
+  const hasValidDocumentValidation =
+    Boolean(selectedFile && documentType) &&
+    documentValidation.status === 'valid' &&
+    documentValidation.fileKey === selectedFileKey &&
+    documentValidation.documentType === validationDocumentType;
   const markStepCompleted = useCallback((stepIndex) => {
     setCompletedStepIndexes((current) => (
       current.includes(stepIndex) ? current : [...current, stepIndex]
@@ -641,8 +863,22 @@ export default function EditEmployeeScreen({ navigation }) {
     scrollRef.current?.scrollTo({ y: 0, animated: true });
   }, [step]);
 
+  useEffect(() => {
+    selectedFileRef.current = selectedFile;
+  }, [selectedFile]);
+
+  useEffect(() => {
+    capturePreviewRef.current = capturePreviewFile;
+  }, [capturePreviewFile]);
+
+  useEffect(() => () => {
+    safeDeleteCameraFile(agreementForm.signatureFile);
+  }, [agreementForm.signatureFile]);
+
   useEffect(() => () => {
     mountedRef.current = false;
+    safeDeleteCameraFile(selectedFileRef.current);
+    safeDeleteCameraFile(capturePreviewRef.current);
   }, []);
 
   useEffect(() => {
@@ -664,6 +900,188 @@ export default function EditEmployeeScreen({ navigation }) {
       },
     ]);
   });
+
+  const replaceSelectedDocumentFile = useCallback((nextFile) => {
+    validationRequestRef.current += 1;
+    validationLockRef.current = false;
+    setIsValidatingDocument(false);
+    setDocumentValidation(INITIAL_DOCUMENT_VALIDATION);
+    setIsValidationMessageDismissed(false);
+    const previousFile = selectedFileRef.current;
+    if (previousFile?.source === 'camera' && previousFile.uri !== nextFile?.uri) {
+      safeDeleteCameraFile(previousFile);
+    }
+
+    selectedFileRef.current = nextFile;
+    setSelectedFile(nextFile);
+  }, []);
+
+  const replaceCapturePreviewFile = useCallback((nextFile) => {
+    const previousFile = capturePreviewRef.current;
+    if (previousFile?.source === 'camera' && previousFile.uri !== nextFile?.uri) {
+      safeDeleteCameraFile(previousFile);
+    }
+
+    capturePreviewRef.current = nextFile;
+    setCapturePreviewFile(nextFile);
+  }, []);
+
+  const clearCapturePreviewFile = useCallback(({ deleteFile = true } = {}) => {
+    const currentFile = capturePreviewRef.current;
+    if (deleteFile) {
+      safeDeleteCameraFile(currentFile);
+    }
+
+    capturePreviewRef.current = null;
+    setCapturePreviewFile(null);
+  }, []);
+
+  const clearSelectedDocumentFile = useCallback(() => {
+    replaceSelectedDocumentFile(null);
+    setDocumentError('');
+  }, [replaceSelectedDocumentFile]);
+
+  const validateDocumentCandidate = useCallback(async (file, typeValue, { showAlert = true, source = 'selected', onRetake } = {}) => {
+    const currentType = getDocumentValidationType(typeValue);
+    const fileKey = getDocumentFileKey(file);
+
+    if (!file || !currentType) {
+      setDocumentValidation(INITIAL_DOCUMENT_VALIDATION);
+      return false;
+    }
+
+    if (validationLockRef.current) {
+      return false;
+    }
+
+    const requestId = validationRequestRef.current + 1;
+    validationRequestRef.current = requestId;
+    validationLockRef.current = true;
+    setIsValidatingDocument(true);
+    setDocumentError('');
+    setIsValidationMessageDismissed(false);
+    setDocumentValidation({
+      status: documentValidatorRef.current?.isReady() ? 'validating' : 'preparing',
+      title: documentValidatorRef.current?.isReady() ? 'Validating document' : 'Preparing document validator',
+      message: documentValidatorRef.current?.isReady() ? 'Validating document...' : 'Preparing document validator...',
+      fileKey,
+      documentType: currentType,
+    });
+
+    try {
+      const result = await validateEmployeeDocument({
+        file,
+        documentType: currentType,
+        analyze: (candidate, candidateType) => documentValidatorRef.current.analyze(candidate, candidateType),
+      });
+
+      if (validationRequestRef.current !== requestId || !mountedRef.current) {
+        return false;
+      }
+
+      const nextValidation = {
+        ...result,
+        fileKey,
+        documentType: currentType,
+      };
+
+      setDocumentValidation(nextValidation);
+
+      if (result.status !== 'valid') {
+        const message = result.message || 'The selected document could not be validated.';
+
+        if (showAlert) {
+          const title = result.title || (
+            result.status === 'unreadable'
+              ? 'Unable to Read Document'
+              : result.status === 'error'
+                ? 'Unable to Validate Document'
+                : `Invalid ${getFriendlyDocumentLabel(typeValue)}`
+          );
+          const body = source === 'camera' && result.status === 'invalid'
+            ? `${message}\n\nPlease retake the photo or upload the correct document.`
+            : message;
+
+          const actions = source === 'camera'
+            ? [
+                { text: 'Cancel', style: 'cancel' },
+                { text: 'Retake', onPress: onRetake },
+              ]
+            : undefined;
+
+          Alert.alert(title, body, actions);
+        }
+
+        return false;
+      }
+
+      return true;
+    } catch (error) {
+      if (validationRequestRef.current === requestId && mountedRef.current) {
+        const nextValidation = {
+          status: 'error',
+          title: 'Unable to Validate Document',
+          message: error?.message || 'Document validation is temporarily unavailable. Please try again.',
+          fileKey,
+          documentType: currentType,
+        };
+        setDocumentValidation(nextValidation);
+        if (showAlert) {
+          const actions = source === 'camera'
+            ? [
+                { text: 'Cancel', style: 'cancel' },
+                { text: 'Retake', onPress: onRetake },
+              ]
+            : undefined;
+
+          Alert.alert(nextValidation.title, nextValidation.message, actions);
+        }
+      }
+      return false;
+    } finally {
+      if (validationRequestRef.current === requestId) {
+        validationLockRef.current = false;
+        if (mountedRef.current) {
+          setIsValidatingDocument(false);
+        }
+      }
+    }
+  }, []);
+
+  const acceptCapturedDocumentPhoto = useCallback(() => {
+    if (!capturePreviewRef.current) return;
+    const acceptedFile = capturePreviewRef.current;
+    replaceSelectedDocumentFile(acceptedFile);
+    setDocumentValidation({
+      status: 'valid',
+      title: `Valid ${getFriendlyDocumentLabel(documentType)}`,
+      message: '',
+      fileKey: getDocumentFileKey(acceptedFile),
+      documentType: getDocumentValidationType(documentType),
+    });
+    clearCapturePreviewFile({ deleteFile: false });
+    setDirty(true);
+  }, [clearCapturePreviewFile, documentType, replaceSelectedDocumentFile]);
+
+  const handleDocumentTypeChange = useCallback((value) => {
+    validationRequestRef.current += 1;
+    validationLockRef.current = false;
+    setIsValidatingDocument(false);
+    setDocumentValidation(INITIAL_DOCUMENT_VALIDATION);
+    setIsValidationMessageDismissed(false);
+    setDocumentError('');
+    setDocumentType(value);
+    setDirty(true);
+
+    const currentFile = selectedFileRef.current;
+    if (currentFile) {
+      setTimeout(() => {
+        if (selectedFileRef.current === currentFile) {
+          validateDocumentCandidate(currentFile, value, { showAlert: true });
+        }
+      }, 0);
+    }
+  }, [validateDocumentCandidate]);
 
   const applyProfile = useCallback((nextProfile) => {
     setProfile(nextProfile);
@@ -703,15 +1121,6 @@ export default function EditEmployeeScreen({ navigation }) {
       const nextPending = normalizeAgreements(pendingPayload);
       const nextSigned = normalizeAgreements(signedPayload);
       const nextAgreements = mergeAgreementsWithLifecycle(nextTemplates, nextPending, nextSigned);
-
-      // if (__DEV__) {
-      //   console.log('[Employee Agreements]', {
-      //     employeeId: targetEmployeeId,
-      //     templates: nextTemplates.length,
-      //     pending: nextPending.length,
-      //     signed: nextSigned.length,
-      //   });
-      // }
 
       if (mountedRef.current && !signal?.aborted) {
         setAgreementTemplates(nextTemplates);
@@ -906,7 +1315,9 @@ export default function EditEmployeeScreen({ navigation }) {
       setSuccess('');
       setDirty(false);
       setDocumentType('');
-      setSelectedFile(null);
+      clearSelectedDocumentFile();
+      clearCapturePreviewFile();
+      setSignatureCapturePreview(null);
       setAgreementForm({ agreementId: '', signatureName: '', signedLocation: '', signatureFile: null });
       clearCompletedSteps();
       setIsEditMode(false);
@@ -922,7 +1333,7 @@ export default function EditEmployeeScreen({ navigation }) {
       { text: 'Keep Editing', style: 'cancel' },
       { text: 'Discard', style: 'destructive', onPress: finishExit },
     ]);
-  }, [clearCompletedSteps, dirty, loadAll]);
+  }, [clearCapturePreviewFile, clearCompletedSteps, clearSelectedDocumentFile, dirty, loadAll]);
 
   const updatePersonal = (key, value) => {
     if (!isEditMode) return;
@@ -1134,8 +1545,174 @@ export default function EditEmployeeScreen({ navigation }) {
     }
   };
 
+  const handleCaptureDocumentPhoto = async () => {
+    if (!isEditMode) return;
+    if (!documentType) {
+      Alert.alert('Document type required', 'Select a pending document type before capturing a photo.');
+      return;
+    }
+    if (cameraActionLockRef.current || isCapturingDocument || isPreparingCapture || isValidatingDocument || isUploadingDocument || isSavingDocumentsStep) {
+      return;
+    }
+
+    const selectedTypeKey = normalizeDocumentType(documentType);
+    const alreadyUploaded =
+      documentChecklist.some((item) => normalizeDocumentType(item.documentType) === selectedTypeKey && item.uploaded) ||
+      documents.some((item) => normalizeDocumentType(item.documentType) === selectedTypeKey);
+
+    if (alreadyUploaded) {
+      refreshDocuments({ quiet: true }).catch(() => {});
+      Alert.alert('Duplicate document', 'This document type is already uploaded.');
+      return;
+    }
+
+    cameraActionLockRef.current = true;
+    setDocumentError('');
+    let capturedAsset = null;
+
+    try {
+      const permission = await ImagePicker.requestCameraPermissionsAsync();
+      if (!permission.granted) {
+        Alert.alert(
+          'Camera Permission Required',
+          'Camera access is required only to capture an employee document. You can still upload an existing PDF or image from your device.',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Open Settings', onPress: () => Linking.openSettings() },
+          ]
+        );
+        return;
+      }
+
+      setIsCapturingDocument(true);
+      const result = await ImagePicker.launchCameraAsync({
+        mediaTypes: ['images'],
+        allowsEditing: false,
+        quality: 1,
+        exif: false,
+      });
+      setIsCapturingDocument(false);
+
+      if (result.canceled) {
+        return;
+      }
+
+      capturedAsset = result.assets?.[0] || null;
+      if (!capturedAsset?.uri) {
+        Alert.alert('Camera unavailable', 'Unable to open the camera on this device.');
+        return;
+      }
+
+      setIsPreparingCapture(true);
+      setIsValidationMessageDismissed(false);
+      setDocumentValidation({
+        ...INITIAL_DOCUMENT_VALIDATION,
+        status: 'preparing',
+        title: 'Preparing document',
+        message: 'Preparing photo...',
+      });
+      const processedFile = await compressCapturedDocument(capturedAsset, documentType);
+      const isValidCapture = await validateDocumentCandidate(processedFile, documentType, {
+        showAlert: true,
+        source: 'camera',
+        onRetake: () => setTimeout(() => handleCaptureDocumentPhoto(), 0),
+      });
+
+      if (!isValidCapture) {
+        await safeDeleteCameraFile(processedFile);
+        return;
+      }
+
+      replaceCapturePreviewFile(processedFile);
+    } catch (error) {
+      setDocumentValidation((current) => current.status === 'preparing' ? INITIAL_DOCUMENT_VALIDATION : current);
+      if (capturedAsset) {
+        Alert.alert(
+          'Unable to prepare photo',
+          error?.message || 'Please retake the image or upload a file from your device.',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Retake', onPress: () => setTimeout(() => handleCaptureDocumentPhoto(), 0) },
+          ]
+        );
+      } else {
+        Alert.alert('Camera unavailable', error?.message || 'Unable to open the camera on this device.');
+      }
+    } finally {
+      cameraActionLockRef.current = false;
+      if (mountedRef.current) {
+        setIsCapturingDocument(false);
+        setIsPreparingCapture(false);
+      }
+    }
+  };
+
+  const retakeCapturedDocumentPhoto = useCallback(() => {
+    clearCapturePreviewFile();
+    setTimeout(() => {
+      handleCaptureDocumentPhoto();
+    }, 0);
+  }, [clearCapturePreviewFile, handleCaptureDocumentPhoto]);
+
+  const handleCaptureSignaturePhoto = async () => {
+    if (!isEditMode || !selectedAgreement || isAgreementSigned(selectedAgreement) || saving || signatureCameraLockRef.current) return;
+    signatureCameraLockRef.current = true;
+    try {
+      const permission = await ImagePicker.requestCameraPermissionsAsync();
+      if (!permission.granted) {
+        Alert.alert('Camera Permission Required', 'Camera permission is required to capture a signature image.');
+        return;
+      }
+      const result = await ImagePicker.launchCameraAsync({
+        mediaTypes: ['images'],
+        allowsEditing: false,
+        quality: 1,
+        exif: false,
+      });
+      if (!result.canceled && result.assets?.[0]?.uri) {
+        setSignatureCapturePreview(result.assets[0]);
+      }
+    } catch {
+      Alert.alert('Camera unavailable', 'Unable to capture a signature photo. Please try again or choose an image.');
+    } finally {
+      signatureCameraLockRef.current = false;
+    }
+  };
+
+  const useCapturedSignaturePhoto = async () => {
+    if (!signatureCapturePreview || signatureCameraLockRef.current) return;
+    signatureCameraLockRef.current = true;
+    setIsPreparingSignature(true);
+    let preparedFile = null;
+    try {
+      preparedFile = await compressCapturedDocument(
+        signatureCapturePreview,
+        'Signature Image',
+        `PIRNAV-Signature-${Date.now()}.jpg`
+      );
+      const fileInfo = await FileSystem.getInfoAsync(preparedFile.uri);
+      if (!fileInfo.exists || !fileInfo.size || fileInfo.size > MAX_SIGNATURE_SIZE) {
+        throw new Error('Signature image size is invalid.');
+      }
+      if (!mountedRef.current) {
+        await safeDeleteCameraFile(preparedFile);
+        return;
+      }
+      setAgreementForm((current) => ({ ...current, signatureFile: preparedFile }));
+      setSignatureCapturePreview(null);
+      setDirty(true);
+    } catch {
+      await safeDeleteCameraFile(preparedFile);
+      Alert.alert('Unable to prepare signature image', 'The captured image could not be reduced below 500 KB. Please retake the photo or choose another image.');
+    } finally {
+      signatureCameraLockRef.current = false;
+      if (mountedRef.current) setIsPreparingSignature(false);
+    }
+  };
+
   const chooseFile = async ({ signature = false } = {}) => {
     if (!isEditMode) return;
+    if (!signature && (isCapturingDocument || isPreparingCapture || isValidatingDocument)) return;
     const result = await DocumentPicker.getDocumentAsync({
       multiple: false,
       copyToCacheDirectory: true,
@@ -1145,7 +1722,19 @@ export default function EditEmployeeScreen({ navigation }) {
     const file = result.assets?.[0];
     if (!file) return;
     const maxSize = signature ? MAX_SIGNATURE_SIZE : MAX_DOCUMENT_SIZE;
-    if (file.size && file.size > maxSize) {
+    let fileSize = file.size;
+    if (signature) {
+      try {
+        fileSize = await getLocalFileSize(file.uri);
+      } catch {
+        fileSize = 0;
+      }
+    }
+    if (signature && !fileSize) {
+      Alert.alert('Unable to open image', 'Please choose a local PNG or JPG signature image.');
+      return;
+    }
+    if (fileSize && fileSize > maxSize) {
       Alert.alert('File too large', signature ? 'Signature image must be 500KB or less.' : 'Document must be 500KB or less.');
       return;
     }
@@ -1158,9 +1747,15 @@ export default function EditEmployeeScreen({ navigation }) {
       return;
     }
     if (signature) {
-      setAgreementForm((current) => ({ ...current, signatureFile: file }));
+      setAgreementForm((current) => ({ ...current, signatureFile: { ...file, size: fileSize } }));
+      setDirty(true);
     } else {
-      setSelectedFile(file);
+      const candidate = { ...file, source: 'picker' };
+      replaceSelectedDocumentFile(candidate);
+      await validateDocumentCandidate(candidate, documentType, {
+        showAlert: true,
+        source: 'picker',
+      });
     }
     setDirty(true);
   };
@@ -1205,6 +1800,7 @@ export default function EditEmployeeScreen({ navigation }) {
     if (!selectedFile) return Alert.alert('File required', 'Select a document file.');
     if (!isSupportedDocumentFile(selectedFile)) return Alert.alert('Unsupported file', 'Please select a PDF, JPG, JPEG, or PNG file.');
     if (selectedFile.size && selectedFile.size > MAX_DOCUMENT_SIZE) return Alert.alert('File too large', 'Document must be 500KB or less.');
+    if (isValidatingDocument) return Alert.alert('Validation in progress', 'Please wait until document validation finishes.');
 
     const selectedTypeKey = normalizeDocumentType(documentType);
     if (
@@ -1213,6 +1809,17 @@ export default function EditEmployeeScreen({ navigation }) {
     ) {
       refreshDocuments({ quiet: true }).catch(() => {});
       return Alert.alert('Duplicate document', 'This document type is already uploaded.');
+    }
+
+    if (!hasValidDocumentValidation) {
+      const validNow = await validateDocumentCandidate(selectedFile, documentType, {
+        showAlert: true,
+        source: selectedFile.source || 'selected',
+      });
+
+      if (!validNow) {
+        return;
+      }
     }
 
     uploadLockRef.current = true;
@@ -1228,7 +1835,7 @@ export default function EditEmployeeScreen({ navigation }) {
       }
 
       setDocumentType('');
-      setSelectedFile(null);
+      clearSelectedDocumentFile();
       markStepCompleted(4);
       setDirty(false);
       setSuccess('Document uploaded successfully.');
@@ -1569,6 +2176,95 @@ export default function EditEmployeeScreen({ navigation }) {
     </>
   );
 
+  const renderCapturePreviewModal = () => {
+    const isSignaturePreview = Boolean(signatureCapturePreview);
+    const previewFile = signatureCapturePreview || capturePreviewFile;
+    const closePreview = () => {
+      if (isPreparingSignature) return;
+      if (isSignaturePreview) setSignatureCapturePreview(null);
+      else clearCapturePreviewFile();
+    };
+
+    return (
+    <Modal
+      visible={Boolean(previewFile)}
+      transparent
+      animationType="fade"
+      statusBarTranslucent
+      onRequestClose={closePreview}
+    >
+      <View style={styles.capturePreviewOverlay}>
+        <View style={styles.capturePreviewCard}>
+          <View style={styles.capturePreviewHeader}>
+            <View style={styles.capturePreviewTitleWrap}>
+              <Text style={styles.capturePreviewTitle}>Photo Preview</Text>
+              <Text style={styles.capturePreviewSubtitle}>{isSignaturePreview ? 'Make sure your signature is clear and readable.' : 'Make sure the document is clear and readable.'}</Text>
+            </View>
+            <TouchableOpacity
+              style={styles.capturePreviewClose}
+              onPress={closePreview}
+              disabled={isPreparingSignature}
+              activeOpacity={0.78}
+              accessibilityRole="button"
+              accessibilityLabel={isSignaturePreview ? 'Close signature photo preview' : 'Close captured document preview'}
+            >
+              <Ionicons name="close" size={21} color={colors.textPrimary} />
+            </TouchableOpacity>
+          </View>
+
+          <View style={styles.captureImageFrame}>
+            {!!previewFile?.uri && (
+              <Image
+                source={{ uri: previewFile.uri }}
+                style={styles.capturePreviewImage}
+                resizeMode="contain"
+                accessibilityLabel={isSignaturePreview ? 'Captured signature photo preview' : 'Captured employee document preview'}
+              />
+            )}
+          </View>
+
+          <View style={styles.capturePreviewMetaBox}>
+            <Text style={styles.selectedFileName} numberOfLines={1}>
+              {isSignaturePreview ? 'Signature Image' : getFriendlyDocumentLabel(documentType)}
+            </Text>
+            <Text style={styles.selectedFileMeta}>
+              JPG - {formatFileSize(previewFile?.size)}
+            </Text>
+          </View>
+
+          <View style={styles.capturePreviewActions}>
+            <TouchableOpacity
+              style={[styles.secondaryButton, styles.capturePreviewActionButton]}
+              onPress={isSignaturePreview ? () => {
+                setSignatureCapturePreview(null);
+                setTimeout(() => handleCaptureSignaturePhoto(), 0);
+              } : retakeCapturedDocumentPhoto}
+              disabled={isPreparingSignature}
+              activeOpacity={0.78}
+              accessibilityRole="button"
+              accessibilityLabel={isSignaturePreview ? 'Retake signature photo' : 'Retake document photo'}
+            >
+              <Ionicons name="camera-reverse-outline" size={17} color={colors.primary} />
+              <Text style={styles.secondaryButtonText}>Retake</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.primaryButton, styles.capturePreviewActionButton]}
+              onPress={isSignaturePreview ? useCapturedSignaturePhoto : acceptCapturedDocumentPhoto}
+              disabled={isPreparingSignature}
+              activeOpacity={0.78}
+              accessibilityRole="button"
+              accessibilityLabel={isSignaturePreview ? 'Use captured signature photo' : 'Use captured document photo'}
+            >
+              {isPreparingSignature && <ActivityIndicator color={colors.white} />}
+              <Text style={styles.primaryButtonText}>{isPreparingSignature ? 'Preparing...' : isSignaturePreview ? 'Use Photo' : 'Upload'}</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+  };
+
   const renderDocuments = () => (
     <>
       <View style={styles.tabSwitch}>
@@ -1630,7 +2326,7 @@ export default function EditEmployeeScreen({ navigation }) {
                   : tone === 'warning'
                     ? colors.warningBackground
                     : colors.mutedBackground;
-              const rowDisabled = !isEditMode || item.uploaded || isUploadingDocument;
+              const rowDisabled = !isEditMode || item.uploaded || isUploadingDocument || isValidatingDocument;
 
               return (
                 <TouchableOpacity
@@ -1638,8 +2334,7 @@ export default function EditEmployeeScreen({ navigation }) {
                   style={styles.checklistRow}
                   onPress={() => {
                     if (rowDisabled) return;
-                    setDocumentType(item.documentType);
-                    setDirty(true);
+                    handleDocumentTypeChange(item.documentType);
                   }}
                   disabled={rowDisabled}
                   activeOpacity={0.82}
@@ -1676,29 +2371,66 @@ export default function EditEmployeeScreen({ navigation }) {
                 label="Document Type"
                 value={documentType}
                 options={documentTypeOptions}
-                onChange={(value) => {
-                  setDocumentType(value);
-                  setDirty(true);
-                }}
+                onChange={handleDocumentTypeChange}
                 placeholder="Select pending document type"
-                disabled={isUploadingDocument || isSavingDocumentsStep}
+                disabled={isUploadingDocument || isSavingDocumentsStep || isValidatingDocument}
               />
-              <TouchableOpacity
-                style={[styles.fileButton, (isUploadingDocument || isSavingDocumentsStep) && styles.inputDisabled]}
-                onPress={() => chooseFile()}
-                disabled={isUploadingDocument || isSavingDocumentsStep}
-                accessibilityRole="button"
-                accessibilityState={{ disabled: isUploadingDocument || isSavingDocumentsStep }}
-              >
-                <Ionicons name="cloud-upload-outline" size={20} color={colors.primary} />
-                <Text style={styles.fileButtonText}>{selectedFile?.name || 'Select PDF, JPG, JPEG or PNG'}</Text>
-              </TouchableOpacity>
+              {!!documentType && !selectedFile && (
+                <View style={styles.documentSourceBlock}>
+                  <Text style={styles.fieldLabel}>Choose document source</Text>
+                  <View style={styles.documentSourceGrid}>
+                    <TouchableOpacity
+                      style={[
+                        styles.sourceOptionButton,
+                        (isUploadingDocument || isSavingDocumentsStep || isCapturingDocument || isPreparingCapture || isValidatingDocument) && styles.inputDisabled,
+                      ]}
+                      onPress={() => chooseFile()}
+                      disabled={isUploadingDocument || isSavingDocumentsStep || isCapturingDocument || isPreparingCapture || isValidatingDocument}
+                      accessibilityRole="button"
+                      accessibilityLabel="Upload document from device"
+                      accessibilityState={{ disabled: isUploadingDocument || isSavingDocumentsStep || isCapturingDocument || isPreparingCapture || isValidatingDocument }}
+                    >
+                      <Ionicons name="cloud-upload-outline" size={20} color={colors.primary} />
+                      <View style={styles.sourceOptionCopy}>
+                        <Text style={styles.sourceOptionTitle}>Upload from Device</Text>
+                        <Text style={styles.sourceOptionSubtitle}>PDF, JPG, JPEG or PNG</Text>
+                      </View>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[
+                        styles.sourceOptionButton,
+                        (isUploadingDocument || isSavingDocumentsStep || isCapturingDocument || isPreparingCapture || isValidatingDocument) && styles.inputDisabled,
+                      ]}
+                      onPress={handleCaptureDocumentPhoto}
+                      disabled={isUploadingDocument || isSavingDocumentsStep || isCapturingDocument || isPreparingCapture || isValidatingDocument}
+                      accessibilityRole="button"
+                      accessibilityLabel="Capture document photo"
+                      accessibilityState={{ disabled: isUploadingDocument || isSavingDocumentsStep || isCapturingDocument || isPreparingCapture || isValidatingDocument, busy: isCapturingDocument || isPreparingCapture || isValidatingDocument }}
+                    >
+                      <Ionicons name="camera-outline" size={20} color={colors.primary} />
+                      <View style={styles.sourceOptionCopy}>
+                        <Text style={styles.sourceOptionTitle}>Capture Photo</Text>
+                        <Text style={styles.sourceOptionSubtitle}>{isPreparingCapture ? 'Preparing photo...' : isValidatingDocument ? 'Validating...' : 'Using camera'}</Text>
+                      </View>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              )}
               <Text style={styles.helperText}>Maximum file size: 500 KB</Text>
               {!!selectedFile && (
                 <View style={styles.selectedFileCard}>
-                  <View style={styles.selectedFileIcon}>
-                    <Ionicons name="document-attach-outline" size={18} color={colors.primary} />
-                  </View>
+                  {isImageDocumentFile(selectedFile) && selectedFile.uri ? (
+                    <Image
+                      source={{ uri: selectedFile.uri }}
+                      style={styles.selectedFileThumbnail}
+                      resizeMode="cover"
+                      accessibilityLabel="Selected employee document preview"
+                    />
+                  ) : (
+                    <View style={styles.selectedFileIcon}>
+                      <Ionicons name="document-attach-outline" size={18} color={colors.primary} />
+                    </View>
+                  )}
                   <View style={styles.selectedFileInfo}>
                     <Text style={styles.selectedFileName} numberOfLines={1}>{selectedFile.name}</Text>
                     <Text style={styles.selectedFileMeta}>
@@ -1709,7 +2441,7 @@ export default function EditEmployeeScreen({ navigation }) {
                     style={styles.selectedFileRemove}
                     onPress={() => {
                       if (isUploadingDocument) return;
-                      setSelectedFile(null);
+                      clearSelectedDocumentFile();
                       setDirty(true);
                     }}
                     disabled={isUploadingDocument}
@@ -1719,6 +2451,66 @@ export default function EditEmployeeScreen({ navigation }) {
                   >
                     <Ionicons name="close" size={18} color={colors.textSecondary} />
                   </TouchableOpacity>
+                </View>
+              )}
+              {documentValidation.status !== 'idle' && !isValidationMessageDismissed && (
+                <View
+                  style={[
+                    styles.documentValidationBox,
+                    documentValidation.status === 'valid' && styles.documentValidationSuccess,
+                    documentValidation.status === 'invalid' && styles.documentValidationError,
+                    documentValidation.status === 'unreadable' && styles.documentValidationError,
+                    documentValidation.status === 'error' && styles.documentValidationError,
+                  ]}
+                  accessibilityRole="alert"
+                >
+                  {['preparing', 'validating'].includes(documentValidation.status) ? (
+                    <ActivityIndicator size="small" color={colors.primary} />
+                  ) : (
+                    <Ionicons
+                      name={documentValidation.status === 'valid' ? 'checkmark-circle-outline' : 'alert-circle-outline'}
+                      size={17}
+                      color={documentValidation.status === 'valid' ? colors.success : colors.employeeEdit.error}
+                    />
+                  )}
+                  <View style={styles.documentValidationCopy}>
+                    <Text
+                      style={[
+                        styles.documentValidationTitle,
+                        documentValidation.status === 'valid' && styles.documentValidationTitleSuccess,
+                        ['invalid', 'unreadable', 'error'].includes(documentValidation.status) && styles.documentValidationTitleError,
+                      ]}
+                    >
+                      {documentValidation.title || 'Document validation'}
+                    </Text>
+                    {!!documentValidation.message && (
+                      <Text style={styles.documentValidationMessage}>{documentValidation.message}</Text>
+                    )}
+                    {documentValidation.status === 'error' && (
+                      <TouchableOpacity
+                        onPress={() => {
+                          documentValidatorRef.current?.retry();
+                          if (selectedFileRef.current && documentType) {
+                            setTimeout(() => validateDocumentCandidate(selectedFileRef.current, documentType), 0);
+                          }
+                        }}
+                        accessibilityRole="button"
+                        accessibilityLabel="Retry document validation"
+                      >
+                        <Text style={styles.inlineRetryText}>Retry validation</Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                  {!['preparing', 'validating'].includes(documentValidation.status) && (
+                    <TouchableOpacity
+                      style={styles.documentValidationDismiss}
+                      onPress={() => setIsValidationMessageDismissed(true)}
+                      accessibilityRole="button"
+                      accessibilityLabel="Dismiss document validation message"
+                    >
+                      <Ionicons name="close" size={18} color={colors.textSecondary} />
+                    </TouchableOpacity>
+                  )}
                 </View>
               )}
               {!!documentError && (
@@ -1731,12 +2523,15 @@ export default function EditEmployeeScreen({ navigation }) {
               <TouchableOpacity
                 style={[
                   styles.primaryButton,
-                  (isUploadingDocument || isSavingDocumentsStep || !documentType || !selectedFile) && styles.buttonDisabled,
+                  (isUploadingDocument || isSavingDocumentsStep || isCapturingDocument || isPreparingCapture || isValidatingDocument || !documentType || !selectedFile || !hasValidDocumentValidation) && styles.buttonDisabled,
                 ]}
                 onPress={uploadDocument}
-                disabled={isUploadingDocument || isSavingDocumentsStep || !documentType || !selectedFile}
+                disabled={isUploadingDocument || isSavingDocumentsStep || isCapturingDocument || isPreparingCapture || isValidatingDocument || !documentType || !selectedFile || !hasValidDocumentValidation}
                 accessibilityRole="button"
-                accessibilityState={{ disabled: isUploadingDocument || isSavingDocumentsStep || !documentType || !selectedFile, busy: isUploadingDocument }}
+                accessibilityState={{
+                  disabled: isUploadingDocument || isSavingDocumentsStep || isCapturingDocument || isPreparingCapture || isValidatingDocument || !documentType || !selectedFile || !hasValidDocumentValidation,
+                  busy: isUploadingDocument,
+                }}
               >
                 {isUploadingDocument ? (
                   <>
@@ -1901,17 +2696,9 @@ export default function EditEmployeeScreen({ navigation }) {
                     signatureFile: null,
                   });
                   setSelectedAgreement(nextAgreement);
-                  if (__DEV__ && nextAgreement) {
-                    console.log('[Agreement Selected]', {
-                      agreementId: nextAgreement.agreementId,
-                      agreementName: nextAgreement.agreementName,
-                      agreementCode: nextAgreement.agreementCode,
-                      status: nextAgreement.status,
-                    });
-                  }
                 }}
                 placeholder="Select Agreement"
-                disabled={agreementLoading || saving}
+                disabled={agreementLoading || saving || isPreparingSignature}
               />
 
               <Field label="Agreement Name" value={agreementText(selectedAgreement?.agreementName)} editable={false} />
@@ -1956,28 +2743,58 @@ export default function EditEmployeeScreen({ navigation }) {
               <TouchableOpacity
                 style={[
                   styles.fileButton,
-                  (!isEditMode || !selectedAgreement || isAgreementSigned(selectedAgreement) || saving) && styles.inputDisabled,
+                  (!isEditMode || !selectedAgreement || isAgreementSigned(selectedAgreement) || saving || isPreparingSignature) && styles.inputDisabled,
                 ]}
                 onPress={() => chooseFile({ signature: true })}
-                disabled={!isEditMode || !selectedAgreement || isAgreementSigned(selectedAgreement) || saving}
+                disabled={!isEditMode || !selectedAgreement || isAgreementSigned(selectedAgreement) || saving || isPreparingSignature}
                 accessibilityRole="button"
-                accessibilityState={{ disabled: !isEditMode || !selectedAgreement || isAgreementSigned(selectedAgreement) || saving }}
+                accessibilityState={{ disabled: !isEditMode || !selectedAgreement || isAgreementSigned(selectedAgreement) || saving || isPreparingSignature }}
               >
                 <Ionicons name="image-outline" size={20} color={colors.primary} />
-                <Text style={styles.fileButtonText}>{agreementForm.signatureFile?.name || 'Choose Signature Image'}</Text>
+                <Text style={styles.fileButtonText}>Choose Signature Image</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  styles.fileButton,
+                  (!isEditMode || !selectedAgreement || isAgreementSigned(selectedAgreement) || saving || isPreparingSignature) && styles.inputDisabled,
+                ]}
+                onPress={handleCaptureSignaturePhoto}
+                disabled={!isEditMode || !selectedAgreement || isAgreementSigned(selectedAgreement) || saving || isPreparingSignature}
+                accessibilityRole="button"
+                accessibilityLabel="Capture signature photo"
+                accessibilityState={{ disabled: !isEditMode || !selectedAgreement || isAgreementSigned(selectedAgreement) || saving || isPreparingSignature }}
+              >
+                <Ionicons name="camera-outline" size={20} color={colors.primary} />
+                <Text style={styles.fileButtonText}>Capture Signature Photo</Text>
               </TouchableOpacity>
               <Text style={styles.helperText}>PNG, JPG or JPEG. Maximum file size: 500KB.</Text>
               {!!agreementForm.signatureFile && (
                 <View style={styles.selectedFileCard}>
-                  <View style={styles.selectedFileIcon}>
-                    <Ionicons name="image-outline" size={18} color={colors.primary} />
-                  </View>
+                  {agreementForm.signatureFile.uri ? (
+                    <Image source={{ uri: agreementForm.signatureFile.uri }} style={styles.selectedFileThumbnail} resizeMode="cover" accessibilityLabel="Selected signature image" />
+                  ) : (
+                    <View style={styles.selectedFileIcon}>
+                      <Ionicons name="image-outline" size={18} color={colors.primary} />
+                    </View>
+                  )}
                   <View style={styles.selectedFileInfo}>
                     <Text style={styles.selectedFileName} numberOfLines={1}>{agreementForm.signatureFile.name}</Text>
                     <Text style={styles.selectedFileMeta}>
                       {getFileExtension(agreementForm.signatureFile).toUpperCase() || agreementForm.signatureFile.mimeType || 'IMAGE'} - {formatFileSize(agreementForm.signatureFile.size)}
                     </Text>
                   </View>
+                  <TouchableOpacity
+                    style={styles.selectedFileRemove}
+                    onPress={() => {
+                      setAgreementForm((current) => ({ ...current, signatureFile: null }));
+                      setDirty(true);
+                    }}
+                    disabled={saving || isPreparingSignature}
+                    accessibilityRole="button"
+                    accessibilityLabel="Remove signature image"
+                  >
+                    <Ionicons name="close" size={18} color={colors.textSecondary} />
+                  </TouchableOpacity>
                 </View>
               )}
 
@@ -2011,6 +2828,7 @@ export default function EditEmployeeScreen({ navigation }) {
                   styles.primaryButton,
                   (
                     saving ||
+                    isPreparingSignature ||
                     !isEditMode ||
                     !selectedAgreement ||
                     isAgreementSigned(selectedAgreement) ||
@@ -2022,6 +2840,7 @@ export default function EditEmployeeScreen({ navigation }) {
                 onPress={submitAgreement}
                 disabled={
                   saving ||
+                  isPreparingSignature ||
                   !isEditMode ||
                   !selectedAgreement ||
                   isAgreementSigned(selectedAgreement) ||
@@ -2033,6 +2852,7 @@ export default function EditEmployeeScreen({ navigation }) {
                 accessibilityState={{
                   disabled:
                     saving ||
+                    isPreparingSignature ||
                     !isEditMode ||
                     !selectedAgreement ||
                     isAgreementSigned(selectedAgreement) ||
@@ -2068,7 +2888,7 @@ export default function EditEmployeeScreen({ navigation }) {
   const ReviewRow = ({ label, value, sensitive = false }) => (
     <View style={styles.reviewRow}>
       <Text style={styles.reviewLabel}>{label}</Text>
-      <Text style={[styles.reviewValue, sensitive && styles.maskedText]}>{valueText(value)}</Text>
+      <Text style={[styles.reviewValue, sensitive && styles.maskedText, !isEditMode && styles.readOnlyValue]}>{valueText(value)}</Text>
     </View>
   );
 
@@ -2167,8 +2987,9 @@ export default function EditEmployeeScreen({ navigation }) {
   return (
     <KeyboardAvoidingView
       style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
     >
+      {step === 4 && isEditMode && <DocumentValidationWebView ref={documentValidatorRef} />}
       <ScrollView
         ref={scrollRef}
         contentContainerStyle={[styles.content, { paddingBottom: sizes.floatingTabHeight + insets.bottom + spacing.xxxl * 3 }]}
@@ -2236,6 +3057,7 @@ export default function EditEmployeeScreen({ navigation }) {
 
         {renderStep()}
       </ScrollView>
+      {renderCapturePreviewModal()}
       <Modal visible={finishSuccessVisible} transparent animationType="fade" accessibilityViewIsModal>
         <View style={styles.successOverlay}>
           <View style={styles.successModal} accessibilityRole="alert">
@@ -2489,6 +3311,9 @@ const styles = StyleSheet.create({
     backgroundColor: colors.mutedBackground,
     color: colors.textSecondary,
   },
+  readOnlyValue: {
+    color: colors.textSecondary,
+  },
   readOnlyControl: {
     backgroundColor: colors.mutedBackground,
   },
@@ -2537,7 +3362,7 @@ const styles = StyleSheet.create({
     fontWeight: fontWeights.semibold,
   },
   optionTextActive: {
-    color: colors.primary,
+    color: colors.textPrimary,
     fontWeight: fontWeights.extraBold,
   },
   selectField: {
@@ -2825,6 +3650,43 @@ const styles = StyleSheet.create({
     fontSize: fontSizes.body,
     fontWeight: fontWeights.semibold,
   },
+  documentSourceBlock: {
+    gap: spacing.sm,
+  },
+  documentSourceGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.md,
+  },
+  sourceOptionButton: {
+    flex: 1,
+    minWidth: 190,
+    minHeight: 72,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    borderRadius: radii.xl,
+    borderWidth: 1,
+    borderColor: colors.employeeEdit.inputBorder,
+    backgroundColor: colors.employeeEdit.inputBackground,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
+  },
+  sourceOptionCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  sourceOptionTitle: {
+    color: colors.textPrimary,
+    fontSize: fontSizes.body,
+    fontWeight: fontWeights.extraBold,
+  },
+  sourceOptionSubtitle: {
+    marginTop: spacing.xs,
+    color: colors.textSecondary,
+    fontSize: fontSizes.sm,
+    fontWeight: fontWeights.medium,
+  },
   documentProgressTop: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -2908,6 +3770,12 @@ const styles = StyleSheet.create({
     borderRadius: radii.pill,
     backgroundColor: colors.employeeEdit.secondaryAction,
   },
+  selectedFileThumbnail: {
+    width: 44,
+    height: 44,
+    borderRadius: radii.md,
+    backgroundColor: colors.employeeEdit.secondaryAction,
+  },
   selectedFileInfo: {
     flex: 1,
     minWidth: 0,
@@ -2930,6 +3798,53 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     borderRadius: radii.pill,
     backgroundColor: colors.employeeEdit.secondaryAction,
+  },
+  documentValidationBox: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: spacing.sm,
+    borderRadius: radii.lg,
+    borderWidth: 1,
+    borderColor: colors.employeeEdit.border,
+    backgroundColor: colors.employeeEdit.reviewSurface,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+  },
+  documentValidationSuccess: {
+    borderColor: colors.success,
+    backgroundColor: colors.successBackground,
+  },
+  documentValidationError: {
+    borderColor: colors.employeeEdit.error,
+    backgroundColor: colors.dangerBackground,
+  },
+  documentValidationCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  documentValidationDismiss: {
+    width: sizes.minTouchTarget,
+    height: sizes.minTouchTarget,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  documentValidationTitle: {
+    color: colors.textPrimary,
+    fontSize: fontSizes.sm,
+    fontWeight: fontWeights.extraBold,
+  },
+  documentValidationTitleSuccess: {
+    color: colors.success,
+  },
+  documentValidationTitleError: {
+    color: colors.employeeEdit.error,
+  },
+  documentValidationMessage: {
+    marginTop: spacing.xs,
+    color: colors.textSecondary,
+    fontSize: fontSizes.sm,
+    lineHeight: 17,
+    fontWeight: fontWeights.medium,
   },
   documentRow: {
     flexDirection: 'row',
@@ -3157,6 +4072,81 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     padding: spacing.screen,
     backgroundColor: colors.overlay,
+  },
+  capturePreviewOverlay: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: spacing.screen,
+    backgroundColor: colors.overlay,
+  },
+  capturePreviewCard: {
+    width: '100%',
+    maxWidth: 560,
+    maxHeight: '88%',
+    gap: spacing.lg,
+    borderRadius: radii.card,
+    backgroundColor: colors.employeeEdit.surface,
+    padding: spacing.xxl,
+    ...shadows.modal,
+  },
+  capturePreviewHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: spacing.lg,
+  },
+  capturePreviewTitleWrap: {
+    flex: 1,
+    minWidth: 0,
+  },
+  capturePreviewTitle: {
+    color: colors.textPrimary,
+    fontSize: fontSizes.headerTitle,
+    fontWeight: fontWeights.extraBold,
+  },
+  capturePreviewSubtitle: {
+    marginTop: spacing.xs,
+    color: colors.textSecondary,
+    fontSize: fontSizes.base,
+    lineHeight: 18,
+    fontWeight: fontWeights.medium,
+  },
+  capturePreviewClose: {
+    width: sizes.minTouchTarget,
+    height: sizes.minTouchTarget,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: radii.pill,
+    backgroundColor: colors.employeeEdit.secondaryAction,
+  },
+  captureImageFrame: {
+    height: 360,
+    maxHeight: '62%',
+    overflow: 'hidden',
+    borderRadius: radii.xl,
+    borderWidth: 1,
+    borderColor: colors.employeeEdit.border,
+    backgroundColor: colors.white,
+  },
+  capturePreviewImage: {
+    width: '100%',
+    height: '100%',
+  },
+  capturePreviewMetaBox: {
+    gap: spacing.xs,
+    borderRadius: radii.lg,
+    borderWidth: 1,
+    borderColor: colors.employeeEdit.border,
+    backgroundColor: colors.employeeEdit.reviewSurface,
+    padding: spacing.lg,
+  },
+  capturePreviewActions: {
+    flexDirection: 'row',
+    gap: spacing.md,
+  },
+  capturePreviewActionButton: {
+    flex: 1,
   },
   successModal: {
     width: '100%',

@@ -2,8 +2,9 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   Alert,
-  FlatList,
+  Image,
   KeyboardAvoidingView,
+  Keyboard,
   Modal,
   Platform,
   RefreshControl,
@@ -14,11 +15,18 @@ import {
   View,
   useWindowDimensions,
 } from 'react-native';
-import DateTimePicker from '@react-native-community/datetimepicker';
+import DateTimePicker, { DateTimePickerAndroid } from '@react-native-community/datetimepicker';
 import { Ionicons } from '@expo/vector-icons';
+import * as DocumentPicker from 'expo-document-picker';
+import * as ImagePicker from 'expo-image-picker';
+import * as FileSystem from 'expo-file-system/legacy';
+import * as IntentLauncher from 'expo-intent-launcher';
+import * as Sharing from 'expo-sharing';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import AppTextInput from '../../shared/components/AppTextInput';
+import { buildApiUrl } from '../../services/apiClient';
+import { notifySessionExpired } from '../auth/sessionManager';
 import { useAuth } from '../auth/AuthContext';
 import { colors, fontSizes, fontWeights, radii, shadows, sizes, spacing } from '../../theme';
 import {
@@ -36,6 +44,7 @@ const LEAVE_TYPES = [
   { label: 'Earned Leave', value: 'Earned' },
   { label: 'Work From Home', value: 'Work From Home' },
 ];
+const LEAVE_PAGE_SIZE = 5;
 
 const EMPTY_FORM = {
   leaveType: 'Casual',
@@ -129,6 +138,35 @@ function compactText(value) {
   return normalized || '';
 }
 
+function getLeaveAttachment(item) {
+  if (!item || typeof item !== 'object') return null;
+  const path = typeof item.attachmentPath === 'string' ? item.attachmentPath.trim() : '';
+  const fileName = typeof item.attachmentFileName === 'string' ? item.attachmentFileName.trim() : '';
+  if (!path && !fileName) return null;
+  return { path, name: fileName || path.split(/[\\/]/).pop() || 'Attachment' };
+}
+
+function getAttachmentMime(name) {
+  const extension = String(name || '').split('.').pop().toLowerCase();
+  return {
+    pdf: 'application/pdf', jpg: 'image/jpeg', jpeg: 'image/jpeg',
+    png: 'image/png', doc: 'application/msword',
+    docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  }[extension] || 'application/octet-stream';
+}
+
+function resolveLeaveAttachmentUrl(path) {
+  const value = String(path || '').trim().replace(/\\/g, '/');
+  if (!value || /^(file:|data:|blob:)/i.test(value) || /^[a-z]:\//i.test(value)) return '';
+  try {
+    const server = new URL(buildApiUrl('/'));
+    const url = new URL(/^https?:\/\//i.test(value) ? value : `/${value.replace(/^\/+/, '')}`, server);
+    return url.origin === server.origin && /^https?:$/.test(url.protocol) ? url.href : '';
+  } catch {
+    return '';
+  }
+}
+
 function getApproverName(item = {}) {
   const directName = compactText(
     item?.approvedByName ||
@@ -178,6 +216,36 @@ function normalizeLeaveRecord(item, requestType) {
     cancellationDetail: getCancellationDetail(item),
     sortDate: item?.createdAt || item?.createdOn || item?.appliedDate || item?.requestedOn || fromDate || toDate || '',
   };
+}
+
+function safeLeaveErrorMessage(error, fallback) {
+  const message = typeof error?.data?.message === 'string' ? error.data.message.trim() : String(error?.message || '').trim();
+  if (!message || message.length > 180 || /[\r\n<>]|System\.|Exception|Authorization|Bearer|Microsoft\.|stack trace|C:\\/i.test(message)) {
+    return fallback;
+  }
+  return message;
+}
+
+function isAmbiguousSubmissionError(error) {
+  return error?.status >= 500 || error?.isOutcomeUnknown ||
+    error?.code === 'REQUEST_TIMEOUT' || error?.code === 'NETWORK_ERROR' ||
+    /SmtpException|Client host rejected/i.test(String(error?.message || ''));
+}
+
+function isRecentSubmissionMatch(record, payload, startedAt, knownIds, isWfh) {
+  const appliedAt = new Date(record?.appliedDate || record?.createdAt || record?.createdOn || record?.requestedOn || '').getTime();
+  if (!Number.isFinite(appliedAt) || appliedAt < startedAt - 10 * 60 * 1000 || appliedAt > Date.now() + 2 * 60 * 1000) return false;
+  const id = getLeaveRecordId(record);
+  if (id !== null && knownIds.has(String(id))) return false;
+  const typeMatches = isWfh
+    ? record?.requestType === 'WFH'
+    : formatLeaveType(record?.leaveType).toLowerCase() === formatLeaveType(payload.leaveType).toLowerCase();
+  const fromDate = parseLocalDate(record?.fromDate);
+  const toDate = parseLocalDate(record?.toDate);
+  return typeMatches && Boolean(fromDate && toDate) &&
+    formatDateForApi(fromDate) === payload.fromDate &&
+    formatDateForApi(toDate) === payload.toDate &&
+    compactText(record?.reason).replace(/\s+/g, ' ').toLowerCase() === payload.reason.replace(/\s+/g, ' ').toLowerCase();
 }
 
 function sortByRecency(left, right) {
@@ -267,11 +335,20 @@ export default function EmployeeLeavesScreen() {
   const mountedRef = useRef(true);
   const controllerRef = useRef(null);
   const detailsScrollRef = useRef(null);
+  const listRef = useRef(null);
+  const historyOffsetRef = useRef(0);
+  const submitLockRef = useRef(false);
+  const fileActionLockRef = useRef(false);
 
   const [form, setForm] = useState(EMPTY_FORM);
+  const [attachment, setAttachment] = useState(null);
+  const [capturedPhoto, setCapturedPhoto] = useState(null);
+  const [previewImageUri, setPreviewImageUri] = useState('');
+  const [fileBusy, setFileBusy] = useState(false);
   const [leaveData, setLeaveData] = useState([]);
   const [wfhData, setWfhData] = useState([]);
   const [selectedRequest, setSelectedRequest] = useState(null);
+  const [currentPage, setCurrentPage] = useState(1);
   const [loading, setLoading] = useState({
     initial: true,
     leaves: true,
@@ -281,7 +358,7 @@ export default function EmployeeLeavesScreen() {
     actionId: null,
   });
   const [errors, setErrors] = useState({ leaves: '', wfh: '' });
-  const [picker, setPicker] = useState({ field: null, visible: false });
+  const [pickerField, setPickerField] = useState(null);
   const [typePickerVisible, setTypePickerVisible] = useState(false);
 
   const isNarrow = width < 350;
@@ -343,7 +420,7 @@ export default function EmployeeLeavesScreen() {
         if (leavesResult.status === 'fulfilled') {
           setLeaveData(leavesResult.value);
         } else {
-          setErrorPatch({ leaves: leavesResult.reason?.message || 'Unable to load leave requests.' });
+          setErrorPatch({ leaves: safeLeaveErrorMessage(leavesResult.reason, 'Unable to load leave requests.') });
         }
       }
 
@@ -351,7 +428,7 @@ export default function EmployeeLeavesScreen() {
         if (wfhResult.status === 'fulfilled') {
           setWfhData(wfhResult.value);
         } else {
-          setErrorPatch({ wfh: wfhResult.reason?.message || 'Unable to load Work From Home requests.' });
+          setErrorPatch({ wfh: safeLeaveErrorMessage(wfhResult.reason, 'Unable to load Work From Home requests.') });
         }
       }
 
@@ -378,6 +455,23 @@ export default function EmployeeLeavesScreen() {
     () => [...leaveData, ...wfhData].sort(sortByRecency),
     [leaveData, wfhData]
   );
+  const totalPages = Math.max(1, Math.ceil(combinedHistory.length / LEAVE_PAGE_SIZE));
+  const visiblePage = Math.min(currentPage, totalPages);
+  const paginatedHistory = useMemo(
+    () => combinedHistory.slice((visiblePage - 1) * LEAVE_PAGE_SIZE, visiblePage * LEAVE_PAGE_SIZE),
+    [combinedHistory, visiblePage]
+  );
+
+  useEffect(() => {
+    setCurrentPage((page) => Math.min(page, totalPages));
+  }, [totalPages]);
+
+  const changePage = (direction) => {
+    setCurrentPage((page) => Math.max(1, Math.min(totalPages, page + direction)));
+    requestAnimationFrame(() => {
+      listRef.current?.scrollTo({ y: historyOffsetRef.current, animated: true });
+    });
+  };
 
   useEffect(() => {
     if (selectedRequest) {
@@ -392,6 +486,7 @@ export default function EmployeeLeavesScreen() {
   }, []);
 
   const closeRequestDetails = useCallback(() => {
+    setPreviewImageUri('');
     setSelectedRequest(null);
   }, []);
 
@@ -416,10 +511,119 @@ export default function EmployeeLeavesScreen() {
     return '';
   };
 
+  const pickAttachment = async () => {
+    if (fileActionLockRef.current || submitLockRef.current) return;
+    fileActionLockRef.current = true;
+    setFileBusy(true);
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        copyToCacheDirectory: true,
+        multiple: false,
+      });
+      if (result.canceled) return;
+      const file = result.assets?.[0];
+      if (!file?.uri || !file?.name) throw new Error('The selected file could not be prepared. Please choose another file.');
+      const info = await FileSystem.getInfoAsync(file.uri);
+      if (!info.exists || !info.size) throw new Error('The selected file is empty or unavailable. Please choose another file.');
+      setAttachment({ uri: file.uri, name: file.name, mimeType: file.mimeType || getAttachmentMime(file.name) });
+    } catch (error) {
+      Alert.alert('Unable to Add Attachment', error?.message || 'Please choose another file.');
+    } finally {
+      fileActionLockRef.current = false;
+      if (mountedRef.current) setFileBusy(false);
+    }
+  };
+
+  const captureAttachment = async () => {
+    if (fileActionLockRef.current || submitLockRef.current) return;
+    fileActionLockRef.current = true;
+    setFileBusy(true);
+    try {
+      const permission = await ImagePicker.requestCameraPermissionsAsync();
+      if (!permission.granted) {
+        Alert.alert('Camera Permission Required', 'Please allow camera access to capture an attachment. You can still upload from your device or submit without a file.');
+        return;
+      }
+      const result = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], allowsEditing: false, quality: 0.9, exif: false });
+      if (result.canceled) return;
+      const photo = result.assets?.[0];
+      if (!photo?.uri) throw new Error('The photo could not be prepared. Please try again.');
+      const info = await FileSystem.getInfoAsync(photo.uri);
+      if (!info.exists || !info.size) throw new Error('The photo is empty or unavailable. Please retake it.');
+      const mimeType = photo.mimeType === 'image/png' ? 'image/png' : 'image/jpeg';
+      setCapturedPhoto({
+        uri: photo.uri,
+        name: `leave-proof-${new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 14)}.${mimeType === 'image/png' ? 'png' : 'jpg'}`,
+        mimeType,
+      });
+    } catch (error) {
+      Alert.alert('Camera unavailable', error?.message || 'Please try again or upload a file from your device.');
+    } finally {
+      fileActionLockRef.current = false;
+      if (mountedRef.current) setFileBusy(false);
+    }
+  };
+
+  const viewLeaveAttachment = async (file) => {
+    if (fileActionLockRef.current) return;
+    if (!file?.path) {
+      Alert.alert('Attachment unavailable', 'This attachment is not available to view.');
+      return;
+    }
+    const url = resolveLeaveAttachmentUrl(file?.path);
+    if (!url) {
+      Alert.alert('Unable to open attachment', 'This attachment path is not available for viewing.');
+      return;
+    }
+    fileActionLockRef.current = true;
+    setFileBusy(true);
+    const name = String(file.name || 'leave-attachment').replace(/[^A-Za-z0-9._ -]/g, '_');
+    const uri = `${FileSystem.cacheDirectory}leave-${Date.now()}-${name}`;
+    try {
+      const response = await FileSystem.downloadAsync(url, uri, {
+        headers: { Authorization: `Bearer ${token}`, 'ngrok-skip-browser-warning': 'true' },
+      });
+      if (response.status === 401) {
+        notifySessionExpired('unauthorized');
+        throw new Error('Your session has expired. Please sign in again.');
+      }
+      const type = String(response.headers?.['Content-Type'] || response.headers?.['content-type'] || '').toLowerCase();
+      const info = await FileSystem.getInfoAsync(uri);
+      if (response.status < 200 || response.status >= 300 || !info.exists || !info.size || /text\/html|application\/json/.test(type)) {
+        throw new Error('The attachment could not be downloaded. Please try again later.');
+      }
+      const mimeType = getAttachmentMime(name);
+      if (mimeType.startsWith('image/')) {
+        setPreviewImageUri(uri);
+      } else if (Platform.OS === 'android') {
+        try {
+          const contentUri = await FileSystem.getContentUriAsync(uri);
+          await IntentLauncher.startActivityAsync('android.intent.action.VIEW', { data: contentUri, flags: 1, type: mimeType });
+        } catch {
+          await Sharing.shareAsync(uri, { mimeType, dialogTitle: 'Open attachment' });
+        }
+      } else {
+        await Sharing.shareAsync(uri, { mimeType, dialogTitle: 'Open attachment' });
+      }
+    } catch (error) {
+      Alert.alert('Unable to open attachment', error?.message || 'Please try again.');
+    } finally {
+      fileActionLockRef.current = false;
+      if (mountedRef.current) setFileBusy(false);
+    }
+  };
+
   const handleSubmit = async () => {
+    if (submitLockRef.current) return;
     const validationMessage = validateForm();
     if (validationMessage) {
       Alert.alert('Check leave details', validationMessage);
+      return;
+    }
+
+    const isWfh = form.leaveType === 'Work From Home';
+    if (isWfh && attachment) {
+      Alert.alert('WFH attachment unavailable', 'The Work From Home file-upload contract is not confirmed. Remove the attachment to submit this request.');
       return;
     }
 
@@ -428,21 +632,62 @@ export default function EmployeeLeavesScreen() {
       fromDate: form.fromDate,
       toDate: form.toDate,
       reason: form.reason.trim(),
+      attachment,
     };
+    const startedAt = Date.now();
+    const knownIds = new Set((isWfh ? wfhData : leaveData)
+      .map((item) => getLeaveRecordId(item))
+      .filter((id) => id !== null)
+      .map(String));
 
+    submitLockRef.current = true;
     setLoadingPatch({ submitting: true });
     try {
-      if (form.leaveType === 'Work From Home') {
+      if (isWfh) {
         await applyWorkFromHome(payload, token);
       } else {
         await applyEmployeeLeave(payload, token);
       }
-      Alert.alert('Success', 'Leave application submitted successfully.');
       setForm(EMPTY_FORM);
-      await loadRequests({ refresh: true });
+      setAttachment(null);
+      setCapturedPhoto(null);
+      await loadRequests({ refresh: true, scope: isWfh ? 'wfh' : 'leaves' });
+      setCurrentPage(1);
+      Alert.alert('Success', 'Leave application submitted successfully.');
     } catch (requestError) {
-      Alert.alert('Unable to submit', requestError.message || 'Please try again.');
+      if (isAmbiguousSubmissionError(requestError)) {
+        try {
+          const latestRequests = await (isWfh ? fetchWfh() : fetchLeaves());
+          const confirmed = latestRequests.some((item) =>
+            isRecentSubmissionMatch(item, payload, startedAt, knownIds, isWfh)
+          );
+          if (confirmed) {
+            controllerRef.current?.abort();
+            setLoadingPatch({ initial: false, refreshing: false, leaves: false, wfh: false });
+            if (isWfh) {
+              setWfhData(latestRequests);
+              setErrorPatch({ wfh: '' });
+            } else {
+              setLeaveData(latestRequests);
+              setErrorPatch({ leaves: '' });
+            }
+            setForm(EMPTY_FORM);
+            setAttachment(null);
+            setCapturedPhoto(null);
+            setCurrentPage(1);
+            Alert.alert('Success', 'Leave application submitted successfully.');
+            return;
+          }
+        } catch {
+          Alert.alert('Submission not confirmed', 'Your leave request may have been submitted, but we couldn’t confirm it due to a temporary server delay. Please refresh My Leave Requests and check once. If the request is not listed, please try submitting again.');
+          return;
+        }
+        Alert.alert('Unable to submit leave', 'Your leave request may have been submitted, but we couldn’t confirm it due to a temporary server delay. Please refresh My Leave Requests and check once. If the request is not listed, please try submitting again.');
+      } else {
+        Alert.alert('Unable to submit leave', safeLeaveErrorMessage(requestError, 'Please check the request and try again.'));
+      }
     } finally {
+      submitLockRef.current = false;
       setLoadingPatch({ submitting: false });
     }
   };
@@ -474,7 +719,7 @@ export default function EmployeeLeavesScreen() {
               }
               Alert.alert('Updated', isWfh ? 'WFH request cancelled.' : 'Leave request deleted.');
             } catch (requestError) {
-              Alert.alert('Unable to update', requestError.message || 'Please try again.');
+              Alert.alert('Unable to update', safeLeaveErrorMessage(requestError, 'Please try again.'));
             } finally {
               setLoadingPatch({ actionId: null });
             }
@@ -485,45 +730,27 @@ export default function EmployeeLeavesScreen() {
   };
 
   const showDatePicker = (field) => {
-    setPicker({ field, visible: true });
-  };
-
-  const handleDateChange = (event, selectedDate) => {
+    Keyboard.dismiss();
     if (Platform.OS === 'android') {
-      setPicker({ field: null, visible: false });
+      DateTimePickerAndroid.open({
+        value: parseLocalDate(form[field]) || new Date(),
+        mode: 'date',
+        onChange: (event, selectedDate) => {
+          if (event?.type === 'set' && selectedDate) {
+            updateForm(field, formatDateForApi(selectedDate));
+          }
+        },
+      });
+      return;
     }
-
-    if (event?.type === 'dismissed') return;
-    if (selectedDate && picker.field) {
-      updateForm(picker.field, formatDateForApi(selectedDate));
-    }
+    setPickerField(field);
   };
 
-  const renderPicker = () => {
-    if (!picker.visible || !picker.field) return null;
-    const value = parseLocalDate(form[picker.field]) || new Date();
-
-    return (
-      <View style={styles.datePickerWrap}>
-        <DateTimePicker
-          value={value}
-          mode="date"
-          display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-          onChange={handleDateChange}
-        />
-        {Platform.OS === 'ios' && (
-          <TouchableOpacity
-            style={styles.dateDoneButton}
-            onPress={() => setPicker({ field: null, visible: false })}
-            activeOpacity={0.78}
-            accessibilityRole="button"
-            accessibilityLabel="Done selecting date"
-          >
-            <Text style={styles.dateDoneText}>Done</Text>
-          </TouchableOpacity>
-        )}
-      </View>
-    );
+  const handleIosDateChange = (event, selectedDate) => {
+    if (event?.type === 'dismissed') return;
+    if (selectedDate && pickerField) {
+      updateForm(pickerField, formatDateForApi(selectedDate));
+    }
   };
 
   const renderForm = () => (
@@ -574,8 +801,6 @@ export default function EmployeeLeavesScreen() {
           </TouchableOpacity>
         </View>
       </View>
-      {renderPicker()}
-
       <Text style={styles.fieldLabel}>Reason</Text>
       <AppTextInput
         style={styles.reasonInput}
@@ -587,6 +812,32 @@ export default function EmployeeLeavesScreen() {
         textAlignVertical="top"
         accessibilityLabel="Reason for leave"
       />
+
+      <Text style={styles.fieldLabel}>Attachments (Optional)</Text>
+      <View style={styles.attachmentActions}>
+        <TouchableOpacity style={styles.attachmentAction} onPress={pickAttachment} disabled={loading.submitting || fileBusy} accessibilityRole="button" accessibilityLabel="Upload attachment from device">
+          <Ionicons name="cloud-upload-outline" size={18} color={colors.primary} />
+          <Text style={styles.attachmentActionText}>Upload from Device</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.attachmentAction} onPress={captureAttachment} disabled={loading.submitting || fileBusy} accessibilityRole="button" accessibilityLabel="Capture attachment photo">
+          <Ionicons name="camera-outline" size={18} color={colors.primary} />
+          <Text style={styles.attachmentActionText}>Capture Photo</Text>
+        </TouchableOpacity>
+      </View>
+      {attachment ? (
+        <View style={styles.attachmentRow}>
+          <Ionicons name="attach-outline" size={18} color={colors.primary} />
+          <Text style={styles.attachmentName} numberOfLines={1}>{attachment.name}</Text>
+          <TouchableOpacity style={styles.attachmentIconButton} onPress={() => setAttachment(null)} disabled={loading.submitting} accessibilityRole="button" accessibilityLabel={`Remove ${attachment.name}`}>
+            <Ionicons name="close" size={19} color={colors.textSecondary} />
+          </TouchableOpacity>
+        </View>
+      ) : (
+        <Text style={styles.attachmentHint}>No attachment selected.</Text>
+      )}
+      {form.leaveType === 'Work From Home' && (
+        <Text style={styles.attachmentHint}>WFH file upload is not confirmed for the current endpoint. Remove a selected file before submitting.</Text>
+      )}
 
       <TouchableOpacity
         style={[styles.submitButton, loading.submitting && styles.submitButtonDisabled]}
@@ -627,10 +878,12 @@ export default function EmployeeLeavesScreen() {
 
   const renderRequestDetailsModal = () => {
     const request = selectedRequest;
+    if (!request) return null;
     const statusMeta = getStatusMeta(request?.status);
     const isWfh = request?.requestType === 'WFH';
     const normalizedStatus = String(request?.status || '').toLowerCase();
     const reason = compactText(request?.reason) || 'No reason provided.';
+    const requestAttachment = getLeaveAttachment(request);
 
     return (
       <Modal
@@ -638,7 +891,7 @@ export default function EmployeeLeavesScreen() {
         transparent
         animationType="fade"
         statusBarTranslucent
-        onRequestClose={closeRequestDetails}
+        onRequestClose={() => previewImageUri ? setPreviewImageUri('') : closeRequestDetails()}
       >
         <View style={styles.detailsOverlay}>
           <View style={[styles.detailsCard, { width: requestDetailsModalWidth }]}>
@@ -701,14 +954,40 @@ export default function EmployeeLeavesScreen() {
                 <Text style={styles.detailLabel}>Reason</Text>
                 <Text style={styles.detailReason}>{reason}</Text>
               </View>
+              <View style={styles.detailsAttachmentBlock}>
+                <Text style={styles.detailLabel}>Attachments</Text>
+                {requestAttachment ? (
+                  <View style={styles.attachmentRow}>
+                    <Ionicons name="attach-outline" size={18} color={colors.primary} />
+                    <Text style={styles.attachmentName} numberOfLines={2}>{requestAttachment.name}</Text>
+                    {!!requestAttachment.path && (
+                      <TouchableOpacity style={styles.attachmentIconButton} onPress={() => viewLeaveAttachment(requestAttachment)} disabled={fileBusy} accessibilityRole="button" accessibilityLabel={`View ${requestAttachment.name}`}>
+                        {fileBusy ? <ActivityIndicator size="small" color={colors.primary} /> : <Ionicons name="eye-outline" size={20} color={colors.primary} />}
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                ) : (
+                  <Text style={styles.attachmentHint}>No attachments uploaded.</Text>
+                )}
+              </View>
             </ScrollView>
           </View>
+          {!!previewImageUri && (
+            <View style={styles.inlineImageOverlay}>
+              <View style={[styles.photoPreviewCard, { width: requestDetailsModalWidth }]}>
+                <TouchableOpacity style={[styles.detailsCloseButton, styles.previewClose]} onPress={() => setPreviewImageUri('')} accessibilityRole="button" accessibilityLabel="Close attachment preview">
+                  <Ionicons name="close" size={21} color={colors.textPrimary} />
+                </TouchableOpacity>
+                <Image source={{ uri: previewImageUri }} style={styles.photoPreviewImage} resizeMode="contain" />
+              </View>
+            </View>
+          )}
         </View>
       </Modal>
     );
   };
 
-  const renderRequest = ({ item }) => {
+  const renderRequest = (item) => {
     const statusMeta = getStatusMeta(item.status);
     const cardStatusLabel = getCompactLeaveStatus(item.status);
     const isPending = String(item.status || '').toLowerCase().includes('pending');
@@ -781,7 +1060,10 @@ export default function EmployeeLeavesScreen() {
     <View>
       <Text style={styles.screenTitle}>Leave Management</Text>
       {renderForm()}
-      <View style={styles.historyHeader}>
+      <View
+        style={styles.historyHeader}
+        onLayout={(event) => { historyOffsetRef.current = event.nativeEvent.layout.y + spacing.screen; }}
+      >
         <View>
           <Text style={styles.sectionTitle}>My Leave Requests</Text>
           <Text style={styles.sectionSubtitle}>Leave and Work From Home history</Text>
@@ -794,21 +1076,41 @@ export default function EmployeeLeavesScreen() {
     </View>
   );
 
+  const pagination = !loading.initial && combinedHistory.length > 0 ? (
+    <View style={styles.paginationCard}>
+      <TouchableOpacity
+        style={[styles.pageButton, visiblePage === 1 && styles.pageButtonDisabled]}
+        onPress={() => changePage(-1)}
+        disabled={visiblePage === 1}
+        accessibilityRole="button"
+        accessibilityLabel="Previous leave requests page"
+        accessibilityState={{ disabled: visiblePage === 1 }}
+      >
+        <Ionicons name="chevron-back" size={16} color={visiblePage === 1 ? colors.placeholder : colors.primary} />
+        <Text style={[styles.pageButtonText, visiblePage === 1 && styles.pageButtonTextDisabled]}>Prev</Text>
+      </TouchableOpacity>
+      <Text style={styles.pageIndicator}>{visiblePage} / {totalPages}</Text>
+      <TouchableOpacity
+        style={[styles.pageButton, visiblePage === totalPages && styles.pageButtonDisabled]}
+        onPress={() => changePage(1)}
+        disabled={visiblePage === totalPages}
+        accessibilityRole="button"
+        accessibilityLabel="Next leave requests page"
+        accessibilityState={{ disabled: visiblePage === totalPages }}
+      >
+        <Text style={[styles.pageButtonText, visiblePage === totalPages && styles.pageButtonTextDisabled]}>Next</Text>
+        <Ionicons name="chevron-forward" size={16} color={visiblePage === totalPages ? colors.placeholder : colors.primary} />
+      </TouchableOpacity>
+    </View>
+  ) : null;
+
   return (
     <KeyboardAvoidingView
       style={styles.container}
       behavior={Platform.select({ ios: 'padding', android: undefined })}
     >
-      <FlatList
-        data={loading.initial ? [] : combinedHistory}
-        keyExtractor={(item) => `${item.requestType}-${item.id || item.sortDate || item.fromDate}`}
-        renderItem={renderRequest}
-        ListHeaderComponent={header}
-        ListEmptyComponent={
-          !loading.initial && !errors.leaves && !errors.wfh
-            ? renderState('No leave requests', 'Your leave and Work From Home requests will appear here.', null)
-            : null
-        }
+      <ScrollView
+        ref={listRef}
         refreshControl={
           <RefreshControl
             refreshing={loading.refreshing}
@@ -824,9 +1126,69 @@ export default function EmployeeLeavesScreen() {
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
         showsVerticalScrollIndicator={false}
-      />
+      >
+        {header}
+        {!loading.initial && paginatedHistory.map((item) => (
+          <React.Fragment key={`${item.requestType}-${item.id ?? item.sortDate ?? item.fromDate}`}>
+            {renderRequest(item)}
+          </React.Fragment>
+        ))}
+        {!loading.initial && !errors.leaves && !errors.wfh && combinedHistory.length === 0 &&
+          renderState('No leave requests', 'Your leave and Work From Home requests will appear here.', null)}
+        {pagination}
+      </ScrollView>
+
+      {Platform.OS === 'ios' && (
+        <Modal
+          visible={Boolean(pickerField)}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setPickerField(null)}
+        >
+          <View style={styles.modalOverlay}>
+            <View style={styles.datePickerWrap}>
+              {pickerField && (
+                <DateTimePicker
+                  value={parseLocalDate(form[pickerField]) || new Date()}
+                  mode="date"
+                  display="spinner"
+                  onChange={handleIosDateChange}
+                />
+              )}
+              <TouchableOpacity
+                style={styles.dateDoneButton}
+                onPress={() => setPickerField(null)}
+                activeOpacity={0.78}
+                accessibilityRole="button"
+                accessibilityLabel="Done selecting date"
+              >
+                <Text style={styles.dateDoneText}>Done</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </Modal>
+      )}
 
       {renderRequestDetailsModal()}
+
+      <Modal visible={Boolean(capturedPhoto)} transparent animationType="fade" onRequestClose={() => setCapturedPhoto(null)}>
+        <View style={styles.photoPreviewOverlay}>
+          <View style={[styles.photoPreviewCard, { width: requestDetailsModalWidth }]}>
+            <Text style={styles.detailsTitle}>Review Photo</Text>
+            {!!capturedPhoto && <Image source={{ uri: capturedPhoto.uri }} style={styles.photoPreviewImage} resizeMode="contain" />}
+            <View style={styles.attachmentActions}>
+              <TouchableOpacity style={styles.attachmentAction} onPress={() => { setCapturedPhoto(null); setTimeout(captureAttachment, 300); }} accessibilityRole="button" accessibilityLabel="Retake photo">
+                <Ionicons name="camera-reverse-outline" size={18} color={colors.primary} />
+                <Text style={styles.attachmentActionText}>Retake</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.attachmentAction} onPress={() => { setAttachment(capturedPhoto); setCapturedPhoto(null); }} accessibilityRole="button" accessibilityLabel="Use photo">
+                <Ionicons name="checkmark" size={18} color={colors.primary} />
+                <Text style={styles.attachmentActionText}>Use Photo</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
 
       <Modal
         visible={typePickerVisible}
@@ -938,7 +1300,9 @@ const styles = StyleSheet.create({
     minWidth: 0,
   },
   datePickerWrap: {
-    marginTop: spacing.lg,
+    width: '100%',
+    maxWidth: 420,
+    alignSelf: 'center',
     borderRadius: radii.xl,
     borderWidth: 1,
     borderColor: colors.leave.fieldBorder,
@@ -969,6 +1333,52 @@ const styles = StyleSheet.create({
     fontSize: fontSizes.body,
     lineHeight: 20,
   },
+  attachmentActions: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+    marginTop: spacing.sm,
+  },
+  attachmentAction: {
+    minHeight: sizes.minTouchTarget,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    borderWidth: 1,
+    borderColor: colors.leave.fieldBorder,
+    borderRadius: radii.lg,
+    paddingHorizontal: spacing.md,
+    backgroundColor: colors.leave.fieldBackground,
+  },
+  attachmentActionText: {
+    color: colors.primary,
+    fontSize: fontSizes.base,
+    fontWeight: fontWeights.semibold,
+  },
+  attachmentHint: {
+    color: colors.textSecondary,
+    fontSize: fontSizes.base,
+    marginTop: spacing.sm,
+  },
+  attachmentRow: {
+    minHeight: sizes.minTouchTarget,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    marginTop: spacing.sm,
+  },
+  attachmentName: {
+    flex: 1,
+    minWidth: 0,
+    color: colors.textPrimary,
+    fontSize: fontSizes.base,
+  },
+  attachmentIconButton: {
+    width: sizes.minTouchTarget,
+    height: sizes.minTouchTarget,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   submitButton: {
     minHeight: sizes.buttonHeight,
     borderRadius: radii.xl,
@@ -995,6 +1405,43 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginTop: spacing.lg,
     marginBottom: spacing.lg,
+  },
+  paginationCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.sm,
+    borderRadius: radii.compactCard,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    padding: spacing.lg,
+    ...shadows.subtle,
+  },
+  pageButton: {
+    minHeight: 40,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    borderRadius: radii.pill,
+    backgroundColor: colors.tealTintSoft,
+    paddingHorizontal: spacing.lg,
+  },
+  pageButtonDisabled: {
+    backgroundColor: colors.mutedBackground,
+  },
+  pageButtonText: {
+    color: colors.primary,
+    fontSize: fontSizes.base,
+    fontWeight: fontWeights.extraBold,
+  },
+  pageButtonTextDisabled: {
+    color: colors.placeholder,
+  },
+  pageIndicator: {
+    color: colors.textPrimary,
+    fontSize: fontSizes.body,
+    fontWeight: fontWeights.extraBold,
   },
   sectionTitle: {
     color: colors.textPrimary,
@@ -1228,6 +1675,38 @@ const styles = StyleSheet.create({
     fontSize: fontSizes.body,
     lineHeight: 21,
     fontWeight: fontWeights.medium,
+  },
+  detailsAttachmentBlock: {
+    paddingTop: spacing.sm,
+  },
+  photoPreviewOverlay: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: colors.overlay || 'rgba(0, 0, 0, 0.65)',
+    padding: spacing.screen,
+  },
+  inlineImageOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: colors.overlay,
+    padding: spacing.screen,
+  },
+  photoPreviewCard: {
+    maxHeight: '85%',
+    borderRadius: radii.lg,
+    backgroundColor: colors.surface,
+    padding: spacing.lg,
+  },
+  photoPreviewImage: {
+    width: '100%',
+    height: 320,
+    maxHeight: '70%',
+    marginTop: spacing.md,
+  },
+  previewClose: {
+    alignSelf: 'flex-end',
   },
   typePickerCard: {
     borderRadius: radii.compactCard,

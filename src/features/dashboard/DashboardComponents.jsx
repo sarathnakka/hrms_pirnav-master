@@ -69,27 +69,48 @@ export function OverviewChip() {
   );
 }
 
-export function MetricCard({ title, value, helper, icon, tone = 'primary', loading = false }) {
+export function MetricCard({ title, value, helper, icon, tone = 'primary', loading = false, onPress }) {
   const toneStyle = getToneStyle(tone);
+  const content = (
+    <View style={styles.metricCopy}>
+      <View style={[styles.metricIcon, { backgroundColor: toneStyle.soft }]}>
+        <Ionicons name={icon} size={16} color={toneStyle.background} />
+      </View>
+      <Text style={styles.metricTitle} numberOfLines={1}>{title}</Text>
+      {loading ? (
+        <View style={styles.metricSkeleton} />
+      ) : (
+        <Text style={styles.metricValue} numberOfLines={1}>{value}</Text>
+      )}
+      <Text style={styles.metricHelper} numberOfLines={1}>{helper}</Text>
+    </View>
+  );
+
+  if (onPress) {
+    return (
+      <Pressable
+        style={({ pressed }) => [
+          styles.metricCard,
+          pressed && styles.metricCardPressed,
+        ]}
+        onPress={onPress}
+        accessible
+        accessibilityRole="button"
+        accessibilityLabel={`${title}: ${value}. ${helper}`}
+      >
+        {content}
+      </Pressable>
+    );
+  }
+
   return (
     <View style={styles.metricCard} accessible accessibilityLabel={`${title}: ${value}. ${helper}`}>
-      <View style={styles.metricCopy}>
-        <View style={[styles.metricIcon, { backgroundColor: toneStyle.soft }]}>
-          <Ionicons name={icon} size={16} color={toneStyle.background} />
-        </View>
-        <Text style={styles.metricTitle} numberOfLines={1}>{title}</Text>
-        {loading ? (
-          <View style={styles.metricSkeleton} />
-        ) : (
-          <Text style={styles.metricValue} numberOfLines={1}>{value}</Text>
-        )}
-        <Text style={styles.metricHelper} numberOfLines={1}>{helper}</Text>
-      </View>
+      {content}
     </View>
   );
 }
 
-export function MetricsGrid({ data, loading }) {
+export function MetricsGrid({ data, loading, onTicketsPress }) {
   const cards = [
     {
       key: 'tickets',
@@ -98,6 +119,7 @@ export function MetricsGrid({ data, loading }) {
       helper: `${normalizeNumber(data?.pendingTickets, 0)} pending`,
       icon: 'ticket',
       tone: 'info',
+      onPress: onTicketsPress,
     },
     {
       key: 'completed',
@@ -691,6 +713,9 @@ const styles = StyleSheet.create({
     padding: spacing.xxl,
     overflow: 'hidden',
     ...shadows.subtle,
+  },
+  metricCardPressed: {
+    opacity: 0.86,
   },
   metricCopy: {
     flex: 1,

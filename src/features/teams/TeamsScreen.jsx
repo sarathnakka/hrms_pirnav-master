@@ -1,10 +1,9 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   FlatList,
   RefreshControl,
   StyleSheet,
   Text,
-  TouchableOpacity,
   View,
   useWindowDimensions,
 } from 'react-native';
@@ -12,31 +11,27 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ROUTES } from '../../app/navigation/routeNames';
-import AppTextInput from '../../shared/components/AppTextInput';
 import { useAuth } from '../auth/AuthContext';
-import { colors, fontSizes, fontWeights, lineHeights, radii, shadows, sizes, spacing } from '../../theme';
+import { colors, fontSizes, fontWeights, radii, sizes, spacing } from '../../theme';
 import { TeamCard, TeamsState } from './TeamsComponents';
-import { getTeams } from './teamsApi';
-import { normalizeTeams } from './teamMappers';
-
-function teamCountLabel(count) {
-  return `${count} ${count === 1 ? 'Team' : 'Teams'}`;
-}
+import { getMyTeam } from './teamsApi';
+import { normalizeMyTeam } from './teamMappers';
 
 export default function TeamsScreen({ navigation }) {
   const { token } = useAuth();
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const abortRef = useRef(null);
-  const [teams, setTeams] = useState([]);
+  const [teamResult, setTeamResult] = useState({ token, team: null });
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
-  const [search, setSearch] = useState('');
 
   const contentWidth = Math.min(Math.max(width - spacing.screen * 2, 288), 680);
+  const team = teamResult.token === token ? teamResult.team : null;
+  const isLoading = loading || teamResult.token !== token;
 
-  const loadTeams = useCallback(async ({ refresh = false } = {}) => {
+  const loadMyTeam = useCallback(async ({ refresh = false } = {}) => {
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
@@ -45,18 +40,22 @@ export default function TeamsScreen({ navigation }) {
       setRefreshing(true);
     } else {
       setLoading(true);
+      setTeamResult({ token, team: null });
     }
     setError('');
 
     try {
-      const response = await getTeams(token, { signal: controller.signal });
-      const normalizedTeams = normalizeTeams(response);
+      const response = await getMyTeam(token, { signal: controller.signal });
       if (!controller.signal.aborted) {
-        setTeams(normalizedTeams);
+        setTeamResult({ token, team: normalizeMyTeam(response) });
       }
     } catch (requestError) {
       if (!controller.signal.aborted) {
-        setError(requestError?.message || 'Unable to load teams.');
+        if (requestError?.status === 404 || requestError?.status === 204) {
+          setTeamResult({ token, team: null });
+        } else {
+          setError(requestError?.message || 'Unable to load your team.');
+        }
       }
     } finally {
       if (!controller.signal.aborted) {
@@ -67,15 +66,9 @@ export default function TeamsScreen({ navigation }) {
   }, [token]);
 
   useEffect(() => {
-    loadTeams();
+    loadMyTeam();
     return () => abortRef.current?.abort();
-  }, [loadTeams]);
-
-  const filteredTeams = useMemo(() => {
-    const query = search.trim().toLowerCase();
-    if (!query) return teams;
-    return teams.filter((team) => team.searchText.includes(query));
-  }, [search, teams]);
+  }, [loadMyTeam]);
 
   const openTeam = useCallback((team) => {
     if (!team.id) {
@@ -94,54 +87,24 @@ export default function TeamsScreen({ navigation }) {
     </View>
   ), [contentWidth, openTeam]);
 
-  const renderHeader = () => (
+  const header = (
     <View style={[styles.headerContent, { width: contentWidth }]}>
       <View style={styles.headingBlock}>
-        <Text style={styles.title} accessibilityRole="header">Teams</Text>
-        <Text style={styles.subtitle}>
-          Click a team to view members, projects and reporting days.
-        </Text>
+        <Text style={styles.title} accessibilityRole="header">My Team</Text>
       </View>
 
-      <View style={styles.countBadge}>
+      {!isLoading && !error && team && <View style={styles.countBadge}>
         <Ionicons name="people" size={18} color={colors.primary} />
-        <Text style={styles.countText}>{teamCountLabel(teams.length)}</Text>
-      </View>
-
-      <View style={styles.searchWrap}>
-        <Ionicons name="search" size={20} color={colors.textSecondary} />
-        <AppTextInput
-          style={styles.searchInput}
-          value={search}
-          onChangeText={setSearch}
-          placeholder="Search teams, manager, project or members"
-          placeholderTextColor={colors.placeholder}
-          autoCapitalize="none"
-          autoCorrect={false}
-          clearButtonMode="while-editing"
-          returnKeyType="search"
-          accessibilityLabel="Search teams, manager, project or members"
-        />
-        {search ? (
-          <TouchableOpacity
-            style={styles.clearButton}
-            onPress={() => setSearch('')}
-            activeOpacity={0.75}
-            accessibilityRole="button"
-            accessibilityLabel="Clear team search"
-          >
-            <Ionicons name="close" size={18} color={colors.textSecondary} />
-          </TouchableOpacity>
-        ) : null}
-      </View>
+        <Text style={styles.countText}>My Team</Text>
+      </View>}
     </View>
   );
 
   const renderEmpty = () => {
-    if (loading) {
+    if (isLoading) {
       return (
         <View style={[styles.stateWrap, { width: contentWidth }]}>
-          <TeamsState title="Loading teams" message="Fetching your assigned teams." loading />
+          <TeamsState title="Loading your team" message="Fetching your assigned team." loading />
         </View>
       );
     }
@@ -150,10 +113,10 @@ export default function TeamsScreen({ navigation }) {
       return (
         <View style={[styles.stateWrap, { width: contentWidth }]}>
           <TeamsState
-            title="Unable to load teams."
+            title="Unable to load your team"
             message="Please check your connection and try again."
             actionLabel="Retry"
-            onAction={() => loadTeams()}
+            onAction={() => loadMyTeam()}
           />
         </View>
       );
@@ -162,52 +125,61 @@ export default function TeamsScreen({ navigation }) {
     return (
       <View style={[styles.stateWrap, { width: contentWidth }]}>
         <TeamsState
-          title={search.trim() ? 'No teams match your search.' : 'No teams available.'}
-          message={search.trim() ? 'Try a different team, manager, project or member.' : 'Assigned teams will appear here.'}
+          title="No team assigned"
+          message="You are not currently assigned to a team."
         />
       </View>
     );
   };
 
   return (
-    <FlatList
-      data={error ? [] : filteredTeams}
-      keyExtractor={(item) => item.key}
-      renderItem={renderTeam}
-      ListHeaderComponent={renderHeader}
-      ListEmptyComponent={renderEmpty}
-      contentContainerStyle={[
-        styles.listContent,
-        {
-          paddingBottom: insets.bottom + sizes.floatingTabHeight + spacing.screenVertical,
-        },
-      ]}
-      columnWrapperStyle={undefined}
-      ItemSeparatorComponent={() => <View style={styles.separator} />}
-      refreshControl={
-        <RefreshControl
-          refreshing={refreshing}
-          onRefresh={() => loadTeams({ refresh: true })}
-          tintColor={colors.primary}
-          colors={[colors.primary]}
-        />
-      }
-      showsVerticalScrollIndicator={false}
-      keyboardShouldPersistTaps="handled"
-    />
+    <View style={styles.screen}>
+      <FlatList
+        style={styles.list}
+        data={isLoading || error || !team ? [] : [team]}
+        keyExtractor={(item) => item.key}
+        renderItem={renderTeam}
+        ListHeaderComponent={header}
+        ListEmptyComponent={renderEmpty}
+        contentContainerStyle={[
+          styles.listContent,
+          { paddingBottom: insets.bottom + sizes.floatingTabHeight + spacing.screenVertical },
+        ]}
+        ItemSeparatorComponent={() => <View style={styles.separator} />}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={() => loadMyTeam({ refresh: true })}
+            tintColor={colors.primary}
+            colors={[colors.primary]}
+          />
+        }
+        showsVerticalScrollIndicator={false}
+      />
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  screen: {
+    flex: 1,
+    backgroundColor: colors.teams.background,
+  },
+  list: {
+    flex: 1,
+    backgroundColor: colors.teams.background,
+  },
   listContent: {
+    flexGrow: 1,
     alignItems: 'center',
     padding: spacing.screen,
-    gap: spacing.sectionGap,
     backgroundColor: colors.teams.background,
   },
   headerContent: {
     maxWidth: 680,
-    gap: spacing.xxl,
+    alignSelf: 'center',
+    gap: spacing.lg,
+    marginBottom: spacing.sectionGap,
   },
   headingBlock: {
     gap: spacing.md,
@@ -218,19 +190,14 @@ const styles = StyleSheet.create({
     fontWeight: fontWeights.extraBold,
     lineHeight: 31,
   },
-  subtitle: {
-    color: colors.textSecondary,
-    fontSize: fontSizes.body,
-    lineHeight: lineHeights.body,
-    fontWeight: fontWeights.medium,
-  },
   countBadge: {
-    minHeight: sizes.minTouchTarget,
+    alignSelf: 'flex-start',
+    minHeight: 36,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: spacing.md,
+    gap: spacing.sm,
     borderRadius: radii.pill,
-    paddingHorizontal: spacing.xxl,
+    paddingHorizontal: spacing.lg,
     backgroundColor: colors.teams.countBadgeBackground,
     borderWidth: 1,
     borderColor: colors.teams.border,
@@ -240,34 +207,8 @@ const styles = StyleSheet.create({
     fontSize: fontSizes.body,
     fontWeight: fontWeights.extraBold,
   },
-  searchWrap: {
-    minHeight: 58,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.md,
-    borderRadius: radii.xxl,
-    paddingHorizontal: spacing.lg,
-    backgroundColor: colors.teams.searchBackground,
-    borderWidth: 1,
-    borderColor: colors.teams.searchBorder,
-    ...shadows.subtle,
-  },
-  searchInput: {
-    flex: 1,
-    minWidth: 0,
-    color: colors.textPrimary,
-    fontSize: fontSizes.body,
-    fontWeight: fontWeights.semibold,
-    paddingVertical: spacing.md,
-  },
-  clearButton: {
-    width: sizes.minTouchTarget,
-    height: sizes.minTouchTarget,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: radii.pill,
-  },
   stateWrap: {
+    width: '100%',
     maxWidth: 680,
   },
   separator: {

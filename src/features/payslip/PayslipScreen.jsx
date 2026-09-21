@@ -21,7 +21,6 @@ import { useAuth } from '../auth/AuthContext';
 import { colors, fontSizes, fontWeights, radii, shadows, sizes, spacing } from '../../theme';
 import {
   downloadPayslip,
-  getPayslipFileEndpoint,
   getMyPayslips,
   getPayslipPreview,
 } from './payslipApi';
@@ -287,17 +286,7 @@ export default function PayslipScreen() {
     setFileAction({ type, id: payslipId });
 
     try {
-      const endpoint = getPayslipFileEndpoint(payslipId, type);
       const filename = getFileName(payslip);
-
-      if (__DEV__) {
-        console.log('[Payslip Action]', {
-          type,
-          payslipId,
-          monthLabel,
-          endpoint,
-        });
-      }
 
       if (type === 'preview') {
         const file = await getPayslipPreview(payslipId, token, { filename });
@@ -318,17 +307,6 @@ export default function PayslipScreen() {
 
       throw new Error('Unsupported payslip action.');
     } catch (requestError) {
-      if (__DEV__) {
-        console.warn('[Payslip Download Error]', {
-          type,
-          payslipId,
-          monthLabel,
-          message: requestError?.message,
-          status: requestError?.status,
-          code: requestError?.code,
-        });
-      }
-
       if (requestError?.code === 'SESSION_EXPIRED') {
         return;
       }

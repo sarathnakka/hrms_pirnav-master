@@ -249,7 +249,13 @@ export default function DashboardScreen({ navigation }) {
       }
 
       if (item === 'summary') {
-        return <MetricsGrid data={dashboardData} loading={loading.dashboard && !loading.refreshing} />;
+        return (
+          <MetricsGrid
+            data={dashboardData}
+            loading={loading.dashboard && !loading.refreshing}
+            onTicketsPress={() => navigation.navigate(ROUTES.MY_TICKETS)}
+          />
+        );
       }
 
       if (item === 'summaryError') {

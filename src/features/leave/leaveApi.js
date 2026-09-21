@@ -17,7 +17,19 @@ export function getMyWorkFromHomeRequests(token, options = {}) {
 }
 
 export function applyEmployeeLeave(payload, token, options = {}) {
-  return apiClient.post(LEAVE_ENDPOINTS.employeeLeaves, payload, { ...options, token });
+  const formData = new FormData();
+  formData.append('LeaveType', payload.leaveType);
+  formData.append('FromDate', payload.fromDate);
+  formData.append('ToDate', payload.toDate);
+  formData.append('Reason', payload.reason.trim());
+  if (payload.attachment) {
+    formData.append('Attachment', {
+      uri: payload.attachment.uri,
+      name: payload.attachment.name,
+      type: payload.attachment.mimeType || 'application/octet-stream',
+    });
+  }
+  return apiClient.post(LEAVE_ENDPOINTS.employeeLeaves, formData, { ...options, token });
 }
 
 export function applyWorkFromHome(payload, token, options = {}) {
