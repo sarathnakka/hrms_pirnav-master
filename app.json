@@ -38,7 +38,8 @@
         {
           "cameraPermission": "Allow PIRNAV HRMS to use the camera to capture employee documents."
         }
-      ]
+      ],
+      "./plugins/withAdiRegistration"
     ],
     "extra": {
       "eas": {
