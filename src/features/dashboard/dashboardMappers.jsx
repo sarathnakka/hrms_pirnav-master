@@ -205,6 +205,7 @@ export function normalizeAttendance(payload = {}) {
     halfDays: normalizeNumber(source?.halfDays ?? source?.halfDay ?? source?.halfDayCount ?? 0),
     leaveDays: normalizeNumber(source?.leaveDays ?? source?.leave ?? source?.leaveCount ?? 0),
     todayWorkingHours: source?.todayWorkingHours ?? source?.workingHoursToday ?? source?.workingHours ?? '',
+    currentWeekWorkingHours: source?.currentWeekWorkingHours ?? '',
     weeklyHours: normalizeWeeklyHours(source?.weeklyHours ?? source?.weeklyAttendance ?? source?.weekly ?? source?.weeklyData ?? source?.graph ?? []),
   };
 }

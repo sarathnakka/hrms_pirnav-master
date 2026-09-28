@@ -218,12 +218,14 @@ export function AttendanceRing({ percentage, presentDays = 0, absentDays = 0, ha
 }
 
 export function AttendanceOverviewCard({ data, hasData, error, loading, onRetry, chartWidth }) {
+  const weeklyWorkingHours = String(data?.currentWeekWorkingHours ?? '').trim() || '0h 0m';
+
   if (loading) {
     return (
       <SectionCard>
         <CardHeader
           title="Attendance Overview"
-          description="Monitor attendance, absence trends, and today's working hours."
+          description="Monitor attendance, absence trends, and current-week working hours."
           chipLabel="Live Attendance"
           chipIcon="calendar"
         />
@@ -237,7 +239,7 @@ export function AttendanceOverviewCard({ data, hasData, error, loading, onRetry,
       <SectionCard>
         <CardHeader
           title="Attendance Overview"
-          description="Monitor attendance, absence trends, and today's working hours."
+          description="Monitor attendance, absence trends, and current-week working hours."
           chipLabel="Live Attendance"
           chipIcon="calendar"
         />
@@ -258,7 +260,7 @@ export function AttendanceOverviewCard({ data, hasData, error, loading, onRetry,
       <SectionCard>
         <CardHeader
           title="Attendance Overview"
-          description="Monitor attendance, absence trends, and today's working hours."
+          description="Monitor attendance, absence trends, and current-week working hours."
           chipLabel="Live Attendance"
           chipIcon="calendar"
         />
@@ -277,7 +279,7 @@ export function AttendanceOverviewCard({ data, hasData, error, loading, onRetry,
     <SectionCard>
       <CardHeader
         title="Attendance Overview"
-        description="Monitor attendance, absence trends, and today's working hours."
+        description="Monitor attendance, absence trends, and current-week working hours."
         chipLabel="Live Attendance"
         chipIcon="calendar"
       />
@@ -298,17 +300,17 @@ export function AttendanceOverviewCard({ data, hasData, error, loading, onRetry,
           <AttendanceMiniMetric title="Half Days" value={data.halfDays} helper="Partial days" icon="contrast" tone="warning" />
           <AttendanceMiniMetric title="Leave" value={data.leaveDays} helper="Approved leave" icon="calendar-clear" tone="primary" />
         </View>
-        <View style={styles.workingHoursRow} accessible accessibilityLabel={`Today's working hours ${formatWorkingHours(data.todayWorkingHours)}`}>
+        <View style={styles.workingHoursRow} accessible accessibilityLabel={`Weekly working hours ${weeklyWorkingHours}`}>
           <View style={styles.workingHoursLabelWrap}>
             <View style={styles.inlineIcon}>
               <Ionicons name="time" size={14} color={colors.primary} />
             </View>
             <View style={styles.workingHoursTextWrap}>
-              <Text style={styles.workingHoursLabel}>Today's working hours</Text>
+              <Text style={styles.workingHoursLabel}>Weekly Working Hours</Text>
               <Text style={styles.workingHoursMetaText}>Auto-calculated from attendance logs</Text>
             </View>
           </View>
-          <Text style={styles.workingHoursValue}>{formatWorkingHours(data.todayWorkingHours)}</Text>
+          <Text style={styles.workingHoursValue}>{weeklyWorkingHours}</Text>
         </View>
         <WeeklyAttendanceGraph data={data.weeklyHours} width={chartWidth} />
       </View>
@@ -430,7 +432,7 @@ export function WeeklyAttendanceGraph({ data = [], width }) {
 function ChartHeader() {
   return (
     <View style={styles.chartHeader}>
-      <Text style={styles.chartTitle}>Weekly Working Hours</Text>
+      <Text style={styles.chartTitle}>Weekly Attendance Graph</Text>
       <Text style={styles.chartDescription}>Working-hour trend for the current week</Text>
     </View>
   );

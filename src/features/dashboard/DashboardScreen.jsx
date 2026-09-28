@@ -53,6 +53,7 @@ const EMPTY_ATTENDANCE = {
   halfDays: 0,
   leaveDays: 0,
   todayWorkingHours: '',
+  currentWeekWorkingHours: '',
   weeklyHours: [],
 };
 
