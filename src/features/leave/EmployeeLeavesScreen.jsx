@@ -622,11 +622,6 @@ export default function EmployeeLeavesScreen() {
     }
 
     const isWfh = form.leaveType === 'Work From Home';
-    if (isWfh && attachment) {
-      Alert.alert('WFH attachment unavailable', 'The Work From Home file-upload contract is not confirmed. Remove the attachment to submit this request.');
-      return;
-    }
-
     const payload = {
       leaveType: form.leaveType,
       fromDate: form.fromDate,
@@ -834,9 +829,6 @@ export default function EmployeeLeavesScreen() {
         </View>
       ) : (
         <Text style={styles.attachmentHint}>No attachment selected.</Text>
-      )}
-      {form.leaveType === 'Work From Home' && (
-        <Text style={styles.attachmentHint}>WFH file upload is not confirmed for the current endpoint. Remove a selected file before submitting.</Text>
       )}
 
       <TouchableOpacity
