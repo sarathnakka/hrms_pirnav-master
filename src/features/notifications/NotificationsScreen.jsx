@@ -20,6 +20,7 @@ import {
   markAllNotificationsAsRead,
   markNotificationAsRead,
 } from './notificationsApi';
+import { addNotificationRefreshListener } from './pushNotificationService';
 
 function extractCollection(payload) {
   if (Array.isArray(payload)) return payload;
@@ -111,10 +112,14 @@ export default function NotificationsScreen() {
     useCallback(() => {
       mountedRef.current = true;
       const controller = new AbortController();
+      const removeNotificationRefreshListener = addNotificationRefreshListener(() => {
+        loadNotifications({ refresh: true });
+      });
       loadNotifications({ signal: controller.signal });
       return () => {
         mountedRef.current = false;
         controller.abort();
+        removeNotificationRefreshListener();
       };
     }, [loadNotifications])
   );

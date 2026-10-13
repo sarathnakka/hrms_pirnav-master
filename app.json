@@ -20,6 +20,7 @@
     },
     "android": {
       "package": "com.pirnav.hrms",
+      "googleServicesFile": "./google-services.json",
       "icon": "./assets/app-icon.png",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon-foreground.png",
@@ -39,7 +40,23 @@
           "cameraPermission": "Allow PIRNAV HRMS to use the camera to capture employee documents."
         }
       ],
-      "./plugins/withAdiRegistration"
+      "./plugins/withAdiRegistration",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "enableMinifyInReleaseBuilds": true,
+            "enableShrinkResourcesInReleaseBuilds": true
+          }
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "color": "#007A8C",
+          "defaultChannel": "hrms_updates"
+        }
+      ]
     ],
     "extra": {
       "eas": {

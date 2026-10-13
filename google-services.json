@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "887638172525",
+    "project_id": "peoplehrsync",
+    "storage_bucket": "peoplehrsync.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:887638172525:android:16971fc9699dfbe315b064",
+        "android_client_info": {
+          "package_name": "com.pirnav.hrms"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyC-MdAqvAJ_bnVwNl-f8y1ivrBJhAHikUE"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

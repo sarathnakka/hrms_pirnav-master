@@ -17,7 +17,7 @@ import { TeamCard, TeamsState } from './TeamsComponents';
 import { getMyTeam } from './teamsApi';
 import { normalizeMyTeam } from './teamMappers';
 
-export default function TeamsScreen({ navigation }) {
+export default function TeamsScreen({ navigation, route }) {
   const { token } = useAuth();
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
@@ -26,6 +26,7 @@ export default function TeamsScreen({ navigation }) {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
+  const notificationRefreshKey = route?.params?.notificationRefreshKey;
 
   const contentWidth = Math.min(Math.max(width - spacing.screen * 2, 288), 680);
   const team = teamResult.token === token ? teamResult.team : null;
@@ -68,7 +69,7 @@ export default function TeamsScreen({ navigation }) {
   useEffect(() => {
     loadMyTeam();
     return () => abortRef.current?.abort();
-  }, [loadMyTeam]);
+  }, [loadMyTeam, notificationRefreshKey]);
 
   const openTeam = useCallback((team) => {
     if (!team.id) {
