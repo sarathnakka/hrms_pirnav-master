@@ -86,7 +86,7 @@ export default function AppHeader({
           source={iconLogo}
           style={styles.logo}
           resizeMode="contain"
-          accessibilityLabel="PIRNAV logo"
+          accessibilityLabel="PeopleHRSync logo"
         />
 
         {isDashboardHeader ? (

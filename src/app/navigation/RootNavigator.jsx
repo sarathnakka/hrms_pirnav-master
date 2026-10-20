@@ -3,7 +3,7 @@ import { NavigationContainer } from '@react-navigation/native';
 import { createStackNavigator } from '@react-navigation/stack';
 
 import { useAuth } from '../../features/auth/AuthContext';
-import PushNotificationManager from '../../features/notifications/PushNotificationManager';
+import { SHOULD_INITIALIZE_NATIVE_PUSH } from '../../features/notifications/nativePushConfig';
 import AppLoader from '../../shared/components/AppLoader';
 import AppDrawerNavigator from './AppDrawerNavigator';
 import AuthNavigator from './AuthNavigator';
@@ -11,6 +11,9 @@ import { navigationRef } from './navigationRef';
 import { ROUTES } from './routeNames';
 
 const Stack = createStackNavigator();
+const PushNotificationManager = SHOULD_INITIALIZE_NATIVE_PUSH
+  ? require('../../features/notifications/PushNotificationManager').default
+  : null;
 
 function AuthenticatedNavigator() {
   return (
@@ -40,7 +43,9 @@ export default function RootNavigator() {
       >
         {isAuthenticated ? <AuthenticatedNavigator /> : <AuthNavigator />}
       </NavigationContainer>
-      <PushNotificationManager navigationReady={navigationReady} />
+      {PushNotificationManager ? (
+        <PushNotificationManager navigationReady={navigationReady} />
+      ) : null}
     </>
   );
 }

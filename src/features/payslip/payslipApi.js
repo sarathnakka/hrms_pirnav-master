@@ -20,7 +20,7 @@ function getHeader(headers = {}, name) {
   return match ? headers[match] : '';
 }
 
-function sanitizeFilename(value, fallback = 'PIRNAV-Payslip.pdf') {
+function sanitizeFilename(value, fallback = 'PeopleHRSync-Payslip.pdf') {
   const cleaned = String(value || fallback)
     .replace(/[/\\?%*:|"<>]/g, '-')
     .replace(/\0/g, '')
@@ -217,13 +217,13 @@ export function getMyPayslips(token, options = {}) {
 
 export function getPayslipPreview(id, token, options = {}) {
   assertPayslipId(id);
-  const filename = sanitizeFilename(options.filename || 'PIRNAV-Payslip-Preview.pdf');
+  const filename = sanitizeFilename(options.filename || 'PeopleHRSync-Payslip-Preview.pdf');
   return downloadFileFromUrl(buildApiUrl(PAYSLIP_ENDPOINTS.preview(id)), token, filename, FileSystem.cacheDirectory);
 }
 
 export function downloadPayslip(id, token, options = {}) {
   assertPayslipId(id);
-  const filename = sanitizeFilename(options.filename || 'PIRNAV-Payslip.pdf');
+  const filename = sanitizeFilename(options.filename || 'PeopleHRSync-Payslip.pdf');
   return downloadFileFromUrl(buildApiUrl(PAYSLIP_ENDPOINTS.download(id)), token, filename, FileSystem.documentDirectory);
 }
 

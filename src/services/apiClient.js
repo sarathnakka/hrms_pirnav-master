@@ -58,17 +58,30 @@ async function request(
     skipAuth = false,
     requiresAuth = true,
     isPublic = false,
+    onLifecycleEvent,
   } = {}
 ) {
+  const emitLifecycleEvent = (stage, details = {}) => {
+    if (typeof onLifecycleEvent !== 'function') return;
+
+    try {
+      onLifecycleEvent({ stage, ...details });
+    } catch {
+      // Diagnostics must never alter request behavior.
+    }
+  };
   const shouldValidateSession = Boolean(token) && requiresAuth !== false && !skipAuth && !isPublic;
 
   if (shouldValidateSession) {
     const session = await getUserSession();
 
     if (!session.token || isSessionExpired(session)) {
+      emitLifecycleEvent('SESSION_PRECHECK_REJECTED');
       notifySessionExpired('expired');
       throw createSessionExpiredError();
     }
+
+    emitLifecycleEvent('SESSION_PRECHECK_PASSED');
   }
 
   const controller = new AbortController();
@@ -98,12 +111,16 @@ async function request(
   }
 
   try {
-    const response = await fetch(buildUrl(endpoint), {
+    const url = buildUrl(endpoint);
+    emitLifecycleEvent('HTTP_REQUEST_STARTED', { endpoint, url });
+
+    const response = await fetch(url, {
       method,
       headers: requestHeaders,
       body: hasBody ? (isFormData ? body : JSON.stringify(body)) : undefined,
       signal: controller.signal,
     });
+    emitLifecycleEvent('HTTP_RESPONSE_RECEIVED', { status: response.status });
 
     const data = await parseResponse(response);
 

@@ -6,16 +6,31 @@
   "build": {
     "development": {
       "developmentClient": true,
-      "distribution": "internal"
+      "distribution": "internal",
+      "env": {
+        "EXPO_PUBLIC_API_BASE_URL": "https://peoplehrsync.com",
+        "EXPO_PUBLIC_ENABLE_FCM_PUSH": "true",
+        "EXPO_PUBLIC_FCM_REGISTRATION_DIAGNOSTICS": "true"
+      }
     },
     "preview": {
       "distribution": "internal",
+      "env": {
+        "EXPO_PUBLIC_API_BASE_URL": "https://peoplehrsync.com",
+        "EXPO_PUBLIC_ENABLE_FCM_PUSH": "false",
+        "EXPO_PUBLIC_FCM_REGISTRATION_DIAGNOSTICS": "false"
+      },
       "android": {
         "buildType": "apk"
       }
     },
     "production": {
-      "autoIncrement": true
+      "autoIncrement": true,
+      "env": {
+        "EXPO_PUBLIC_API_BASE_URL": "https://peoplehrsync.com",
+        "EXPO_PUBLIC_ENABLE_FCM_PUSH": "false",
+        "EXPO_PUBLIC_FCM_REGISTRATION_DIAGNOSTICS": "false"
+      }
     },
     "verification": {
       "extends": "production",

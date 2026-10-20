@@ -166,7 +166,7 @@ function normalizePayslips(payload) {
 }
 
 function getFileName(payslip) {
-  return `PIRNAV-Payslip-${sanitizeFilenamePart(payslip?.monthLabel)}.pdf`;
+  return `PeopleHRSync-Payslip-${sanitizeFilenamePart(payslip?.monthLabel)}.pdf`;
 }
 
 export default function PayslipScreen() {

@@ -1,7 +1,7 @@
 {
   "expo": {
     "owner": "pirnav-software-solutions-pvt-ltd",
-    "name": "PIRNAV HRMS",
+    "name": "PeopleHRSync",
     "slug": "hrms-pirnav",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -37,7 +37,8 @@
       [
         "expo-image-picker",
         {
-          "cameraPermission": "Allow PIRNAV HRMS to use the camera to capture employee documents."
+          "cameraPermission": "Allow PeopleHRSync to use the camera to capture employee documents.",
+          "microphonePermission": false
         }
       ],
       "./plugins/withAdiRegistration",
@@ -53,7 +54,7 @@
       [
         "expo-notifications",
         {
-          "color": "#007A8C",
+          "color": "#087BAE",
           "defaultChannel": "hrms_updates"
         }
       ]

@@ -156,7 +156,7 @@ export default function LoginScreen({ navigation }) {
           <View style={[styles.formCard, { padding: cardPadding }]}>
             <Text style={styles.welcomeTag}>WELCOME BACK</Text>
             <Text style={[styles.titleText, isSmallDevice && { fontSize: 19 }]}>
-              Sign in to PIRNAV HRMS
+              Sign in to PeopleHRSync
             </Text>
 
             {/* Email Field */}

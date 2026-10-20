@@ -1688,7 +1688,7 @@ export default function EditEmployeeScreen({ navigation }) {
       preparedFile = await compressCapturedDocument(
         signatureCapturePreview,
         'Signature Image',
-        `PIRNAV-Signature-${Date.now()}.jpg`
+        `PeopleHRSync-Signature-${Date.now()}.jpg`
       );
       const fileInfo = await FileSystem.getInfoAsync(preparedFile.uri);
       if (!fileInfo.exists || !fileInfo.size || fileInfo.size > MAX_SIGNATURE_SIZE) {

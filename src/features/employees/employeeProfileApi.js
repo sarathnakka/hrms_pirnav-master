@@ -41,7 +41,7 @@ function getHeader(headers = {}, name) {
   return key ? headers[key] : '';
 }
 
-function sanitizeFilename(value, fallback = 'PIRNAV-Document.pdf') {
+function sanitizeFilename(value, fallback = 'PeopleHRSync-Document.pdf') {
   const cleaned = String(value || fallback)
     .replace(/[/\\?%*:|"<>]/g, '-')
     .replace(/\0/g, '')
@@ -258,12 +258,12 @@ export function deleteEmployeeDocument(documentId, token, options = {}) {
   return apiClient.delete(ENDPOINTS.documentDelete(documentId), { ...options, token });
 }
 
-export function viewEmployeeDocument(documentId, token, filename = 'PIRNAV-Document.pdf') {
+export function viewEmployeeDocument(documentId, token, filename = 'PeopleHRSync-Document.pdf') {
   assertId(documentId, 'Document ID');
   return downloadEmployeeFile(buildApiUrl(ENDPOINTS.documentView(documentId)), token, filename, FileSystem.cacheDirectory);
 }
 
-export function downloadEmployeeDocument(documentId, token, filename = 'PIRNAV-Document.pdf') {
+export function downloadEmployeeDocument(documentId, token, filename = 'PeopleHRSync-Document.pdf') {
   assertId(documentId, 'Document ID');
   return downloadEmployeeFile(buildApiUrl(ENDPOINTS.documentDownload(documentId)), token, filename, FileSystem.documentDirectory);
 }
@@ -321,7 +321,7 @@ async function downloadAgreementWithCandidates(source, token, filename, endpoint
   throw lastError || new Error('Agreement file is unavailable.');
 }
 
-export function viewAgreementDocument(agreement, token, filename = 'PIRNAV-Agreement.pdf') {
+export function viewAgreementDocument(agreement, token, filename = 'PeopleHRSync-Agreement.pdf') {
   return downloadAgreementWithCandidates(
     agreement,
     token,
@@ -332,7 +332,7 @@ export function viewAgreementDocument(agreement, token, filename = 'PIRNAV-Agree
   );
 }
 
-export function viewSignedAgreementDocument(agreement, token, filename = 'PIRNAV-Signed-Agreement.pdf') {
+export function viewSignedAgreementDocument(agreement, token, filename = 'PeopleHRSync-Signed-Agreement.pdf') {
   return downloadAgreementWithCandidates(
     agreement,
     token,
@@ -343,7 +343,7 @@ export function viewSignedAgreementDocument(agreement, token, filename = 'PIRNAV
   );
 }
 
-export function downloadSignedAgreementDocument(agreement, token, filename = 'PIRNAV-Signed-Agreement.pdf') {
+export function downloadSignedAgreementDocument(agreement, token, filename = 'PeopleHRSync-Signed-Agreement.pdf') {
   return downloadAgreementWithCandidates(
     agreement,
     token,

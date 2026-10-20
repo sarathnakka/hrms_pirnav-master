@@ -20,7 +20,7 @@ import {
   markAllNotificationsAsRead,
   markNotificationAsRead,
 } from './notificationsApi';
-import { addNotificationRefreshListener } from './pushNotificationService';
+import { addNotificationRefreshListener } from './notificationRefreshEvents';
 
 function extractCollection(payload) {
   if (Array.isArray(payload)) return payload;

@@ -131,7 +131,7 @@ export default function ResetPasswordScreen({ route, navigation }) {
             </Text>
 
             <Text style={styles.subtitleText}>
-              Create a new secure password for your PIRNAV HRMS account.
+              Create a new secure password for your PeopleHRSync account.
             </Text>
 
             {/* New Password Field */}

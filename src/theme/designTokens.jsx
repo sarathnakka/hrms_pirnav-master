@@ -61,21 +61,21 @@ export const sizes = {
 
 export const shadows = {
   card: {
-    shadowColor: '#004D56',
+    shadowColor: '#173B53',
     shadowOffset: { width: 0, height: 10 },
     shadowOpacity: 0.08,
     shadowRadius: 24,
     elevation: 6,
   },
   subtle: {
-    shadowColor: '#004D56',
+    shadowColor: '#173B53',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.04,
     shadowRadius: 6,
     elevation: 2,
   },
   dashboard: {
-    shadowColor: '#004D56',
+    shadowColor: '#173B53',
     shadowOffset: { width: 0, height: 6 },
     shadowOpacity: 0.05,
     shadowRadius: 14,

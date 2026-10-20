@@ -121,7 +121,7 @@ export default function CreateAccountScreen({ navigation }) {
     if (result.success) {
       Alert.alert(
         'Account Created!',
-        `Welcome ${firstName}! Your PIRNAV HRMS account has been created successfully.`,
+        `Welcome ${firstName}! Your PeopleHRSync account has been created successfully.`,
         [
           {
             text: 'Proceed to Login',
@@ -158,7 +158,7 @@ export default function CreateAccountScreen({ navigation }) {
               <Text style={styles.welcomeTag}>EMPLOYEE ONBOARDING</Text>
 
               <Text style={[styles.titleText, isSmallDevice && styles.titleTextSmall]}>
-                Create Your PIRNAV HRMS{'\n'}Account
+                Create Your PeopleHRSync{'\n'}Account
               </Text>
 
             {/* Full Name Field */}
