@@ -19,6 +19,13 @@ const initialSnapshot = {
   apiHost: 'Unavailable',
   httpResult: 'Pending',
   backendRegistration: 'Pending',
+  deviceUnregistration: 'Not requested',
+  notificationType: 'Unavailable',
+  notificationScreen: 'Unavailable',
+  notificationTarget: 'None',
+  navigationStatus: 'Not requested',
+  notificationTimeSource: 'Unavailable',
+  notificationTimeStatus: 'Not inspected',
   lastStage: 'WAITING',
 };
 

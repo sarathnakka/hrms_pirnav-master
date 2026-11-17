@@ -18,7 +18,7 @@ const DAY_ALIASES = {
   sun: 'Sun',
 };
 
-const DAY_ORDER = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+export const DAY_ORDER = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -58,6 +58,18 @@ function resolveId(...values) {
   });
 
   return value === undefined ? null : value;
+}
+
+function fieldValue(source, keys) {
+  if (!source || typeof source !== 'object') return { found: false, value: undefined };
+
+  for (const key of keys) {
+    if (source[key] !== undefined && source[key] !== null) {
+      return { found: true, value: source[key] };
+    }
+  }
+
+  return { found: false, value: undefined };
 }
 
 function parseCount(...values) {
@@ -110,7 +122,7 @@ export function normalizeReportingDays(value) {
   return DAY_ORDER.filter((day) => unique.has(day));
 }
 
-function extractCollection(payload, keys) {
+export function extractCollection(payload, keys = []) {
   if (Array.isArray(payload)) return payload;
   if (typeof payload === 'string') {
     throw new Error('Unable to load teams.');
@@ -166,24 +178,84 @@ function memberName(member) {
 export function normalizeMember(member, teamFallback = {}) {
   const employeeId = resolveId(
     member?.employeeId,
-    member?.userId,
     member?.employeeCode,
     member?.employee_Id,
-    member?.id
+    member?.empId
   );
-  const wfoDays = normalizeReportingDays(
-    member?.overrideWfoDays ?? member?.wfoDays ?? member?.reportingDays
+  const memberRecordId = resolveId(member?.id, member?.userId, employeeId);
+  const explicitWfo = fieldValue(member, [
+    'overrideWfoDays',
+    'overrideWFODays',
+    'OverrideWfoDays',
+    'OverrideWFODays',
+  ]);
+  const explicitWfh = fieldValue(member, [
+    'overrideWfhDays',
+    'overrideWFHDays',
+    'OverrideWfhDays',
+    'OverrideWFHDays',
+  ]);
+  const memberWfo = fieldValue(member, ['wfoDays', 'WFODays', 'WfoDays', 'reportingDays']);
+  const memberWfh = fieldValue(member, ['wfhDays', 'WFHDays', 'WfhDays']);
+  const hasExplicitSchedule = explicitWfo.found || explicitWfh.found;
+  const hasMemberSchedule = memberWfo.found || memberWfh.found;
+  const rawWfoDays = normalizeReportingDays(
+    hasExplicitSchedule
+      ? explicitWfo.value ?? []
+      : hasMemberSchedule
+        ? memberWfo.value ?? []
+        : teamFallback.reportingDays ?? []
   );
-  const wfhDays = normalizeReportingDays(member?.overrideWfhDays ?? member?.wfhDays);
+  const rawWfhDays = normalizeReportingDays(
+    hasExplicitSchedule
+      ? explicitWfh.value ?? []
+      : hasMemberSchedule
+        ? memberWfh.value ?? []
+        : []
+  );
+  const overrideWeeklyOff = fieldValue(member, [
+    'overrideWeeklyOffDays',
+    'OverrideWeeklyOffDays',
+  ]);
+  const memberWeeklyOff = fieldValue(member, ['weeklyOffDays', 'WeeklyOffDays']);
+  const weeklyOffDays = normalizeReportingDays(
+    member?.customWeeklyOffDays && overrideWeeklyOff.found
+      ? overrideWeeklyOff.value
+      : memberWeeklyOff.found
+        ? memberWeeklyOff.value
+        : teamFallback.weeklyOffDays
+  );
+  const wfoDays = rawWfoDays.filter((day) => !weeklyOffDays.includes(day));
+  const wfhDays = rawWfhDays
+    .filter((day) => !wfoDays.includes(day) && !weeklyOffDays.includes(day));
   const explicitCrossTeam = member?.crossTeam ?? member?.isCrossTeam ?? member?.isCrossMapped;
 
   return {
-    id: employeeId ?? `${memberName(member)}-${teamFallback.id || 'member'}`,
-    employeeId: display(employeeId, '-'),
+    id: memberRecordId ?? `${memberName(member)}-${teamFallback.id || 'member'}`,
+    employeeId: display(employeeId, ''),
     name: memberName(member),
+    email: display(member?.email ?? member?.workEmail, ''),
     role: display(member?.role ?? member?.designation ?? member?.designationName ?? member?.roleName ?? member?.position, 'Employee'),
+    technology: display(member?.technology ?? member?.technologyName, ''),
     projectName: display(member?.overrideProjectName ?? member?.projectName ?? member?.assignedProject, teamFallback.projectName || '-'),
     engagementType: display(member?.engagementType ?? member?.engagement, teamFallback.engagementType || '-'),
+    teamId: resolveId(member?.teamId, member?.team_Id, teamFallback.id),
+    shiftId: resolveId(
+      member?.shiftId,
+      member?.currentShiftId,
+      member?.overrideShiftId,
+      member?.shift?.shiftId
+    ),
+    shiftName: display(
+      member?.shiftName ??
+        member?.currentShiftName ??
+        member?.overrideShiftName ??
+        member?.shift?.shiftName,
+      'No shift'
+    ),
+    customReportingDays: Boolean(member?.customReportingDays),
+    customWeeklyOffDays: Boolean(member?.customWeeklyOffDays),
+    weeklyOffDays,
     wfoDays,
     wfhDays,
     isCrossTeam: Boolean(explicitCrossTeam || member?.overrideProjectId),
@@ -211,10 +283,15 @@ export function normalizeTeam(rawTeam = {}, index = 0) {
   const reportingDays = normalizeReportingDays(
     rawTeam.reportingDays ?? rawTeam.wfoDays ?? rawTeam.officeDays ?? rawTeam.teamReportingDays
   );
+  const weeklyOffDays = normalizeReportingDays(
+    rawTeam.weeklyOffDays ?? rawTeam.teamWeeklyOffDays
+  );
   const fallback = {
     id,
     projectName: display(rawTeam.projectName ?? rawTeam.project ?? rawTeam.assignedProject ?? rawTeam.projectTitle),
     engagementType: display(rawTeam.engagementType ?? rawTeam.engagement ?? rawTeam.projectType ?? rawTeam.type),
+    reportingDays,
+    weeklyOffDays,
   };
   const members = rawMembers(rawTeam).map((member) => normalizeMember(member, fallback));
   const employeeNames = rawEmployeeNames(rawTeam);
@@ -241,7 +318,13 @@ export function normalizeTeam(rawTeam = {}, index = 0) {
     ),
     projectName: fallback.projectName,
     engagementType: fallback.engagementType,
+    shiftId: resolveId(rawTeam.myShiftId, rawTeam.shiftId, rawTeam.teamShiftId),
+    shiftName: display(
+      rawTeam.myShiftName ?? rawTeam.shiftName ?? rawTeam.teamShiftName,
+      'No shift'
+    ),
     reportingDays,
+    weeklyOffDays,
     members,
     memberCount,
   };
@@ -287,4 +370,19 @@ export function normalizeTeamDetails(payload, initialTeam = null) {
     id: normalized.id ?? initialTeam.id,
     key: normalized.key || initialTeam.key,
   };
+}
+
+export function normalizeShifts(payload) {
+  return extractCollection(payload, ['shifts', 'items', 'records', 'data'])
+    .map((shift) => {
+      const id = resolveId(shift?.shiftId, shift?.id, shift?.shift_Id);
+      return {
+        id,
+        name: display(shift?.shiftName ?? shift?.name ?? shift?.shiftCode, ''),
+        startTime: display(shift?.startTime, ''),
+        endTime: display(shift?.endTime, ''),
+        isActive: shift?.isActive ?? shift?.active ?? true,
+      };
+    })
+    .filter((shift) => shift.id !== null && shift.name && shift.isActive !== false);
 }

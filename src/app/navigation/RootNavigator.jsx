@@ -30,6 +30,7 @@ function AuthenticatedNavigator() {
 export default function RootNavigator() {
   const { isAuthenticated, isInitializing } = useAuth();
   const [navigationReady, setNavigationReady] = useState(false);
+  const [navigationStateVersion, setNavigationStateVersion] = useState(0);
 
   if (isInitializing) {
     return <AppLoader />;
@@ -39,12 +40,19 @@ export default function RootNavigator() {
     <>
       <NavigationContainer
         ref={navigationRef}
-        onReady={() => setNavigationReady(true)}
+        onReady={() => {
+          setNavigationReady(true);
+          setNavigationStateVersion((value) => value + 1);
+        }}
+        onStateChange={() => setNavigationStateVersion((value) => value + 1)}
       >
         {isAuthenticated ? <AuthenticatedNavigator /> : <AuthNavigator />}
       </NavigationContainer>
       {PushNotificationManager ? (
-        <PushNotificationManager navigationReady={navigationReady} />
+        <PushNotificationManager
+          navigationReady={navigationReady}
+          navigationStateVersion={navigationStateVersion}
+        />
       ) : null}
     </>
   );

@@ -10,7 +10,14 @@ import { emitNotificationRefresh } from './notificationRefreshEvents';
 
 export const HRMS_NOTIFICATION_CHANNEL_ID = 'hrms_updates';
 
+export {
+  getNotificationResponseKey,
+  getNotificationRoutingInfo,
+  getNotificationTimingInfo,
+} from './notificationRouting';
+
 const DEVICE_REGISTRATION_ENDPOINT = '/api/user-notifications/devices';
+const DEVICE_UNREGISTRATION_TIMEOUT_MS = 8000;
 const INSTALLATION_ID_KEY = 'peoplehrsync_installation_id';
 
 const pendingRegistrations = [];
@@ -22,6 +29,7 @@ let registrationQueue = Promise.resolve();
 let registrationGeneration = 0;
 let registeredDeviceToken = '';
 let registeredSessionToken = '';
+let blockedRegistrationSessionToken = '';
 
 function getNotificationsModule() {
   if (!notificationsModule) {
@@ -85,12 +93,14 @@ function createInstallationId() {
   });
 }
 
+async function getStoredInstallationId() {
+  return normalizeString(await SecureStore.getItemAsync(INSTALLATION_ID_KEY));
+}
+
 async function getInstallationId() {
   if (!installationIdPromise) {
     installationIdPromise = (async () => {
-      const storedInstallationId = normalizeString(
-        await SecureStore.getItemAsync(INSTALLATION_ID_KEY)
-      );
+      const storedInstallationId = await getStoredInstallationId();
 
       if (storedInstallationId) {
         return storedInstallationId;
@@ -153,6 +163,7 @@ export function resetDeviceRegistrationState() {
   registrationGeneration += 1;
   registeredDeviceToken = '';
   registeredSessionToken = '';
+  blockedRegistrationSessionToken = '';
   pendingRegistrations.length = 0;
   resetFcmDiagnostics();
 }
@@ -191,6 +202,14 @@ export function registerDeviceToken(fcmToken, sessionToken) {
       backendRegistration: 'Not attempted',
     });
     return Promise.resolve({ status: 'skipped', reason: 'missing-session-token' });
+  }
+
+  if (authenticatedToken === blockedRegistrationSessionToken) {
+    updateFcmDiagnostics('REGISTRATION_SKIPPED', {
+      registrationSkipped: 'Session is signing out',
+      backendRegistration: 'Not attempted',
+    });
+    return Promise.resolve({ status: 'skipped', reason: 'session-signing-out' });
   }
 
   if (
@@ -353,6 +372,120 @@ export function registerDeviceToken(fcmToken, sessionToken) {
   return registration.promise;
 }
 
+export function unregisterDeviceToken(sessionToken) {
+  const authenticatedToken = normalizeString(sessionToken);
+
+  updateFcmDiagnostics('UNREGISTRATION_REQUESTED', {
+    deviceUnregistration: 'Pending',
+  });
+
+  if (Platform.OS !== 'android') {
+    updateFcmDiagnostics('UNREGISTRATION_SKIPPED', {
+      deviceUnregistration: 'Unsupported platform',
+    });
+    return Promise.resolve({ status: 'unsupported' });
+  }
+
+  if (!authenticatedToken) {
+    updateFcmDiagnostics('UNREGISTRATION_SKIPPED', {
+      deviceUnregistration: 'Missing authenticated JWT',
+    });
+    return Promise.resolve({ status: 'skipped', reason: 'missing-session-token' });
+  }
+
+  // Invalidate queued registrations immediately. The shared queue guarantees that
+  // DELETE runs after any POST already in flight and is the final backend mutation.
+  registrationGeneration += 1;
+  blockedRegistrationSessionToken = authenticatedToken;
+  registeredDeviceToken = '';
+  registeredSessionToken = '';
+  pendingRegistrations.length = 0;
+
+  const runUnregistration = async () => {
+    let installationId;
+
+    try {
+      installationId = await getStoredInstallationId();
+    } catch (error) {
+      updateFcmDiagnostics('UNREGISTRATION_STORAGE_ERROR', {
+        deviceUnregistration: 'Installation ID storage error',
+      });
+      throw error;
+    }
+
+    if (!installationId) {
+      updateFcmDiagnostics('UNREGISTRATION_SKIPPED', {
+        deviceUnregistration: 'No registered installation',
+      });
+      return { status: 'skipped', reason: 'missing-installation-id' };
+    }
+
+    const endpoint = `${DEVICE_REGISTRATION_ENDPOINT}/${encodeURIComponent(
+      installationId
+    )}`;
+
+    try {
+      await apiClient.delete(endpoint, {
+        token: authenticatedToken,
+        timeout: DEVICE_UNREGISTRATION_TIMEOUT_MS,
+        onLifecycleEvent: ({ stage, status, url }) => {
+          if (stage === 'SESSION_PRECHECK_PASSED') {
+            updateFcmDiagnostics(stage, { sessionValidation: 'Passed' });
+          } else if (stage === 'SESSION_PRECHECK_REJECTED') {
+            updateFcmDiagnostics(stage, {
+              sessionValidation: 'Rejected',
+              deviceUnregistration: 'Failure (session rejected)',
+            });
+          } else if (stage === 'HTTP_REQUEST_STARTED') {
+            updateFcmDiagnostics('UNREGISTRATION_HTTP_STARTED', {
+              apiHost: getSafeHost(url),
+              deviceUnregistration: 'Request started',
+            });
+          } else if (stage === 'HTTP_RESPONSE_RECEIVED') {
+            updateFcmDiagnostics('UNREGISTRATION_HTTP_RESPONSE', {
+              deviceUnregistration: `HTTP ${status}`,
+            });
+          }
+        },
+      });
+
+      updateFcmDiagnostics('UNREGISTRATION_SUCCEEDED', {
+        deviceUnregistration: 'Success',
+      });
+
+      if (__DEV__) {
+        console.info('[PeopleHRSync FCM] Device unregistration succeeded.');
+      }
+
+      return { status: 'unregistered' };
+    } catch (error) {
+      updateFcmDiagnostics('UNREGISTRATION_FAILED', {
+        deviceUnregistration: `Failure (${getSafeHttpFailure(error)})`,
+      });
+
+      if (__DEV__) {
+        console.warn('[PeopleHRSync FCM] Device unregistration failed.', {
+          status: error?.status || null,
+          code: error?.code || null,
+        });
+      }
+
+      throw error;
+    }
+  };
+
+  const unregistrationPromise = registrationQueue
+    .catch(() => {})
+    .then(runUnregistration);
+
+  registrationQueue = unregistrationPromise.then(
+    () => undefined,
+    () => undefined
+  );
+
+  return unregistrationPromise;
+}
+
 export async function initializeAndroidPushNotifications() {
   if (Platform.OS !== 'android') {
     updateFcmDiagnostics('REGISTRATION_SKIPPED', {
@@ -428,25 +561,6 @@ export function addForegroundNotificationListener(listener) {
 export function addNotificationResponseListener(listener) {
   const Notifications = getNotificationsModule();
   return Notifications.addNotificationResponseReceivedListener(listener);
-}
-
-export function getNotificationResponseKey(response) {
-  const data = response?.notification?.request?.content?.data || {};
-  const notificationId = String(data.notificationId || '').trim();
-  const requestId = String(response?.notification?.request?.identifier || '').trim();
-  return notificationId || requestId;
-}
-
-export function getNotificationNavigationTarget(response) {
-  const data = response?.notification?.request?.content?.data || {};
-  const type = String(data.type || '').trim().toUpperCase();
-  const screen = String(data.screen || '').trim().toLowerCase();
-
-  if (type === 'TEAM_SCHEDULE_UPDATED' || (!type && screen === 'teams')) {
-    return 'teams';
-  }
-
-  return '';
 }
 
 export function getLastNotificationResponse() {

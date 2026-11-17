@@ -11,6 +11,7 @@ import {
 } from './authStorage';
 import { getMyEmployeeDetails } from '../employees/employeeProfileApi';
 import { normalizeEmployeeProfile } from '../employees/employeeProfileMappers';
+import { SHOULD_INITIALIZE_NATIVE_PUSH } from '../notifications/nativePushConfig';
 import {
   clearSessionTimer,
   notifySessionExpired,
@@ -21,6 +22,15 @@ import {
 } from './sessionManager';
 
 const AuthContext = createContext(null);
+
+async function unregisterPushDeviceForManualLogout(sessionToken) {
+  if (!SHOULD_INITIALIZE_NATIVE_PUSH || !sessionToken) {
+    return;
+  }
+
+  const { unregisterDeviceToken } = require('../notifications/pushNotificationService');
+  await unregisterDeviceToken(sessionToken);
+}
 
 function text(value) {
   if (value === null || value === undefined) {
@@ -103,6 +113,15 @@ export function AuthProvider({ children }) {
     clearSessionTimer();
 
     try {
+      if (reason === 'manual') {
+        try {
+          const session = await getUserSession();
+          await unregisterPushDeviceForManualLogout(session.token);
+        } catch {
+          // Device cleanup is best-effort and must never prevent local logout.
+        }
+      }
+
       await clearUserSession();
     } finally {
       if (mountedRef.current) {

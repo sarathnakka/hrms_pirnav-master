@@ -25,6 +25,13 @@ const DIAGNOSTIC_ROWS = [
   ['API host', 'apiHost'],
   ['HTTP result', 'httpResult'],
   ['Backend registration', 'backendRegistration'],
+  ['Device unregistration', 'deviceUnregistration'],
+  ['Notification type', 'notificationType'],
+  ['Notification screen', 'notificationScreen'],
+  ['Notification target', 'notificationTarget'],
+  ['Tap navigation', 'navigationStatus'],
+  ['Notification time source', 'notificationTimeSource'],
+  ['Notification time status', 'notificationTimeStatus'],
 ];
 
 export default function FcmRegistrationDiagnosticsPanel() {

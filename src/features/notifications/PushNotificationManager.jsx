@@ -1,7 +1,11 @@
 import React, { useCallback, useEffect, useRef } from 'react';
 import { AppState } from 'react-native';
 
-import { navigateToTeamsFromNotification } from '../../app/navigation/navigationRef';
+import {
+  isAuthenticatedNavigationReady,
+  isTeamsNotificationDestinationFocused,
+  navigateToTeamsFromNotification,
+} from '../../app/navigation/navigationRef';
 import { useAuth } from '../auth/AuthContext';
 import FcmRegistrationDiagnosticsPanel from './FcmRegistrationDiagnosticsPanel';
 import { updateFcmDiagnostics } from './fcmRegistrationDiagnostics';
@@ -12,20 +16,24 @@ import {
   clearLastNotificationResponse,
   getCurrentNativePushToken,
   getLastNotificationResponse,
-  getNotificationNavigationTarget,
   getNotificationResponseKey,
+  getNotificationRoutingInfo,
+  getNotificationTimingInfo,
   initializeAndroidPushNotifications,
   registerDeviceToken,
   resetDeviceRegistrationState,
 } from './pushNotificationService';
 
-export default function PushNotificationManager({ navigationReady }) {
+export default function PushNotificationManager({
+  navigationReady,
+  navigationStateVersion,
+}) {
   const { isAuthenticated, token } = useAuth();
   const authenticatedRef = useRef(isAuthenticated);
   const sessionTokenRef = useRef(token || '');
   const navigationReadyRef = useRef(navigationReady);
   const previousAuthenticatedRef = useRef(isAuthenticated);
-  const pendingResponseRef = useRef(null);
+  const pendingNavigationRef = useRef(null);
   const handledResponseKeysRef = useRef(new Set());
   const tokenInitializationPromiseRef = useRef(null);
 
@@ -118,19 +126,104 @@ export default function PushNotificationManager({ navigationReady }) {
     }
   }, [ensureNativeToken, registerCurrentDevice]);
 
+  const finishPendingNavigation = useCallback((responseKey) => {
+    if (responseKey) {
+      handledResponseKeysRef.current.add(responseKey);
+    }
+    pendingNavigationRef.current = null;
+    updateFcmDiagnostics('NOTIFICATION_NAVIGATION_SUCCEEDED', {
+      navigationStatus: 'Teams focused',
+    });
+    clearLastNotificationResponse();
+  }, []);
+
+  const processPendingNavigation = useCallback(() => {
+    const pending = pendingNavigationRef.current;
+    if (!pending) return;
+
+    if (!authenticatedRef.current) {
+      updateFcmDiagnostics('WAITING_FOR_AUTH', {
+        navigationStatus: 'Waiting for authentication',
+      });
+      return;
+    }
+
+    if (
+      !navigationReadyRef.current ||
+      !isAuthenticatedNavigationReady()
+    ) {
+      updateFcmDiagnostics('WAITING_FOR_NAVIGATION', {
+        navigationStatus: 'Waiting for authenticated navigator',
+      });
+      return;
+    }
+
+    if (pending.navigationStarted) {
+      if (isTeamsNotificationDestinationFocused()) {
+        finishPendingNavigation(pending.responseKey);
+      }
+      return;
+    }
+
+    pending.navigationStarted = true;
+    updateFcmDiagnostics('NOTIFICATION_NAVIGATION_STARTED', {
+      navigationStatus: 'Opening Teams',
+    });
+
+    if (!navigateToTeamsFromNotification(pending.refreshKey)) {
+      pending.navigationStarted = false;
+      updateFcmDiagnostics('WAITING_FOR_NAVIGATION', {
+        navigationStatus: 'Authenticated navigator unavailable',
+      });
+      return;
+    }
+
+    if (isTeamsNotificationDestinationFocused()) {
+      finishPendingNavigation(pending.responseKey);
+    }
+  }, [finishPendingNavigation]);
+
   const handleResponse = useCallback((response) => {
     if (!response?.notification) {
       return;
     }
 
     const responseKey = getNotificationResponseKey(response);
+    const timing = getNotificationTimingInfo(response);
+    updateFcmDiagnostics('NOTIFICATION_TAP_RECEIVED', {
+      navigationStatus: 'Tap received',
+      notificationTimeSource: timing.source,
+      notificationTimeStatus: timing.status,
+    });
+
     if (responseKey && handledResponseKeysRef.current.has(responseKey)) {
+      updateFcmDiagnostics('NOTIFICATION_RESPONSE_ALREADY_HANDLED', {
+        navigationStatus: 'Duplicate ignored',
+      });
       clearLastNotificationResponse();
       return;
     }
 
-    const target = getNotificationNavigationTarget(response);
+    if (
+      responseKey &&
+      pendingNavigationRef.current?.responseKey === responseKey
+    ) {
+      updateFcmDiagnostics('NOTIFICATION_NAVIGATION_QUEUED', {
+        navigationStatus: 'Already queued',
+      });
+      processPendingNavigation();
+      return;
+    }
+
+    const routing = getNotificationRoutingInfo(response);
+    const { target } = routing;
     if (!target) {
+      updateFcmDiagnostics('NOTIFICATION_TARGET_UNSUPPORTED', {
+        notificationType: routing.type,
+        notificationScreen: routing.screen,
+        notificationTarget: 'None',
+        navigationStatus: 'Ignored safely',
+      });
       if (responseKey) {
         handledResponseKeysRef.current.add(responseKey);
       }
@@ -138,20 +231,35 @@ export default function PushNotificationManager({ navigationReady }) {
       return;
     }
 
-    if (!authenticatedRef.current || !navigationReadyRef.current) {
-      pendingResponseRef.current = response;
+    updateFcmDiagnostics('NOTIFICATION_TARGET_RECOGNIZED', {
+      notificationType: routing.type,
+      notificationScreen: routing.screen,
+      notificationTarget: 'Teams',
+    });
+
+    if (!authenticatedRef.current) {
+      updateFcmDiagnostics('WAITING_FOR_AUTH', {
+        navigationStatus: 'Login required; tap discarded',
+      });
+      if (responseKey) {
+        handledResponseKeysRef.current.add(responseKey);
+      }
+      clearLastNotificationResponse();
       return;
     }
 
     const refreshKey = responseKey || String(Date.now());
-    if (target === 'teams' && navigateToTeamsFromNotification(refreshKey)) {
-      if (responseKey) {
-        handledResponseKeysRef.current.add(responseKey);
-      }
-      pendingResponseRef.current = null;
-      clearLastNotificationResponse();
-    }
-  }, []);
+    pendingNavigationRef.current = {
+      responseKey,
+      refreshKey,
+      target,
+      navigationStarted: false,
+    };
+    updateFcmDiagnostics('NOTIFICATION_NAVIGATION_QUEUED', {
+      navigationStatus: 'Teams queued',
+    });
+    processPendingNavigation();
+  }, [processPendingNavigation]);
 
   useEffect(() => {
     updateFcmDiagnostics('MANAGER_MOUNTED', { managerMounted: 'Yes' });
@@ -181,21 +289,32 @@ export default function PushNotificationManager({ navigationReady }) {
     );
 
     if (previousAuthenticatedRef.current && !isAuthenticated) {
-      pendingResponseRef.current = null;
+      pendingNavigationRef.current = null;
       handledResponseKeysRef.current.clear();
       clearLastNotificationResponse();
     }
 
     previousAuthenticatedRef.current = isAuthenticated;
 
-    if (isAuthenticated && navigationReady && pendingResponseRef.current) {
-      handleResponse(pendingResponseRef.current);
+    if (isAuthenticated && navigationReady) {
+      processPendingNavigation();
     }
 
     if (nextSessionToken) {
       registerForSession(nextSessionToken);
     }
-  }, [handleResponse, isAuthenticated, navigationReady, registerForSession, token]);
+  }, [
+    isAuthenticated,
+    navigationReady,
+    processPendingNavigation,
+    registerForSession,
+    token,
+  ]);
+
+  useEffect(() => {
+    navigationReadyRef.current = navigationReady;
+    processPendingNavigation();
+  }, [navigationReady, navigationStateVersion, processPendingNavigation]);
 
   useEffect(() => {
     const tokenSubscription = addNativePushTokenListener((nativeToken) => {

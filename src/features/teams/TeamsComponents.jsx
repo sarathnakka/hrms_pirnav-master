@@ -3,6 +3,7 @@ import { ActivityIndicator, StyleSheet, Text, TouchableOpacity, View } from 'rea
 import { Ionicons } from '@expo/vector-icons';
 
 import { colors, fontSizes, fontWeights, radii, shadows, sizes, spacing } from '../../theme';
+import { scheduleDays } from './teamDateUtils';
 
 const WORK_WEEK_DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
 
@@ -127,13 +128,34 @@ export function SummaryRow({ label, value, icon }) {
   );
 }
 
-export function MemberRow({ member }) {
-  const hasDetails = member.projectName !== '-' || member.engagementType !== '-' || member.wfoDays.length > 0 || member.wfhDays.length > 0;
+function ScheduleChips({ label, days, weekStart, tone }) {
+  const schedule = scheduleDays(days, weekStart);
+  return (
+    <View style={styles.scheduleGroup}>
+      <Text style={styles.scheduleLabel}>{label}</Text>
+      {schedule.length ? (
+        <View style={styles.scheduleChips}>
+          {schedule.map((item) => (
+            <View key={`${label}-${item.day}`} style={[styles.scheduleChip, tone === 'wfh' && styles.scheduleChipWfh]}>
+              <Text style={[styles.scheduleDay, tone === 'wfh' && styles.scheduleDayWfh]}>{item.day}</Text>
+              <Text style={[styles.scheduleDate, tone === 'wfh' && styles.scheduleDayWfh]}>{item.date.getDate()}</Text>
+            </View>
+          ))}
+        </View>
+      ) : <Text style={styles.scheduleEmpty}>-</Text>}
+    </View>
+  );
+}
+
+export function MemberRow({ member, weekStart, isOwnMember = false, onOpenActions }) {
+  const hasDetails = member.projectName !== '-' || member.engagementType !== '-';
+  const employeeId = String(member.employeeId || '').trim();
+  const hasEmployeeId = employeeId && employeeId !== '-' && employeeId !== '--';
 
   return (
     <View
       style={styles.memberRow}
-      accessibilityLabel={`${member.name}, ${member.role}, employee ID ${member.employeeId}.`}
+      accessibilityLabel={`${member.name}, ${member.role}${hasEmployeeId ? `, employee ID ${employeeId}` : ''}.`}
     >
       <View style={styles.memberHeader}>
         <View style={styles.memberAvatar}>
@@ -148,8 +170,23 @@ export function MemberRow({ member }) {
             </View>
           ) : null}
         </View>
-        <View style={styles.employeeIdPill}>
-          <Text style={styles.employeeIdText} numberOfLines={1}>{member.employeeId}</Text>
+        <View style={styles.memberHeaderActions}>
+          {hasEmployeeId ? (
+            <View style={styles.employeeIdPill}>
+              <Text style={styles.employeeIdText} numberOfLines={1}>{employeeId}</Text>
+            </View>
+          ) : null}
+          {isOwnMember && onOpenActions ? (
+            <TouchableOpacity
+              style={styles.memberActionButton}
+              onPress={onOpenActions}
+              hitSlop={spacing.sm}
+              accessibilityRole="button"
+              accessibilityLabel="Open my shift actions"
+            >
+              <Ionicons name="ellipsis-vertical" size={20} color={colors.primary} />
+            </TouchableOpacity>
+          ) : null}
         </View>
       </View>
 
@@ -157,10 +194,18 @@ export function MemberRow({ member }) {
         <View style={styles.memberDetails}>
           {member.projectName !== '-' ? <Text style={styles.detailText} numberOfLines={1}>Project: {member.projectName}</Text> : null}
           {member.engagementType !== '-' ? <Text style={styles.detailText} numberOfLines={1}>Engagement: {member.engagementType}</Text> : null}
-          {member.wfoDays.length > 0 ? <Text style={styles.detailText}>WFO: {member.wfoDays.join(', ')}</Text> : null}
-          {member.wfhDays.length > 0 ? <Text style={styles.detailText}>WFH: {member.wfhDays.join(', ')}</Text> : null}
         </View>
       ) : null}
+
+      <View style={styles.shiftRow}>
+        <Text style={styles.shiftLabel}>Current Shift</Text>
+        <Text style={styles.shiftValue} numberOfLines={1}>{member.shiftName || 'No shift'}</Text>
+      </View>
+
+      <View style={styles.scheduleBlock}>
+        <ScheduleChips label="WFO" days={member.wfoDays} weekStart={weekStart} tone="wfo" />
+        <ScheduleChips label="WFH" days={member.wfhDays} weekStart={weekStart} tone="wfh" />
+      </View>
     </View>
   );
 }
@@ -420,8 +465,10 @@ const styles = StyleSheet.create({
     fontWeight: fontWeights.extraBold,
   },
   employeeIdPill: {
-    maxWidth: '32%',
+    flexShrink: 0,
+    minWidth: 48,
     minHeight: 28,
+    alignItems: 'center',
     justifyContent: 'center',
     borderRadius: radii.pill,
     paddingHorizontal: spacing.md,
@@ -431,6 +478,20 @@ const styles = StyleSheet.create({
     color: colors.teams.employeeIdText,
     fontSize: fontSizes.base,
     fontWeight: fontWeights.extraBold,
+  },
+  memberHeaderActions: {
+    flexShrink: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+  },
+  memberActionButton: {
+    width: 34,
+    height: 34,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: radii.pill,
+    backgroundColor: colors.teams.actionBackground,
   },
   memberDetails: {
     marginTop: spacing.sm,
@@ -442,5 +503,77 @@ const styles = StyleSheet.create({
     fontSize: fontSizes.sm,
     lineHeight: 16,
     fontWeight: fontWeights.medium,
+  },
+  shiftRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.md,
+    marginTop: spacing.lg,
+    paddingTop: spacing.md,
+    borderTopWidth: 1,
+    borderTopColor: colors.teams.rowDivider,
+  },
+  shiftLabel: {
+    color: colors.textSecondary,
+    fontSize: fontSizes.base,
+    fontWeight: fontWeights.bold,
+  },
+  shiftValue: {
+    flex: 1,
+    minWidth: 0,
+    color: colors.textPrimary,
+    fontSize: fontSizes.base,
+    fontWeight: fontWeights.extraBold,
+    textAlign: 'right',
+  },
+  scheduleBlock: {
+    gap: spacing.md,
+    marginTop: spacing.lg,
+  },
+  scheduleGroup: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+  },
+  scheduleLabel: {
+    width: 34,
+    color: colors.textSecondary,
+    fontSize: fontSizes.sm,
+    fontWeight: fontWeights.extraBold,
+  },
+  scheduleChips: {
+    flex: 1,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+  },
+  scheduleChip: {
+    minWidth: 42,
+    alignItems: 'center',
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.sm,
+    borderRadius: radii.md,
+    backgroundColor: colors.teams.dayActiveBackground,
+  },
+  scheduleChipWfh: {
+    backgroundColor: colors.infoBackground,
+  },
+  scheduleDay: {
+    color: colors.teams.dayActiveText,
+    fontSize: fontSizes.sm,
+    fontWeight: fontWeights.extraBold,
+  },
+  scheduleDayWfh: {
+    color: colors.info,
+  },
+  scheduleDate: {
+    color: colors.teams.dayActiveText,
+    fontSize: 10,
+    fontWeight: fontWeights.bold,
+  },
+  scheduleEmpty: {
+    color: colors.textMuted,
+    fontSize: fontSizes.base,
   },
 });
