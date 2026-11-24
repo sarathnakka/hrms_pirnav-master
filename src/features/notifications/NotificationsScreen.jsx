@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -21,6 +21,14 @@ import {
   markNotificationAsRead,
 } from './notificationsApi';
 import { addNotificationRefreshListener } from './notificationRefreshEvents';
+import { SHOULD_INITIALIZE_NATIVE_PUSH } from './nativePushConfig';
+import {
+  getNotificationPermissionSnapshot,
+  openAndroidNotificationSettings,
+  refreshAndroidNotificationPermission,
+  requestAndroidNotificationPermission,
+  subscribeToNotificationPermission,
+} from './pushNotificationService';
 
 function extractCollection(payload) {
   if (Array.isArray(payload)) return payload;
@@ -78,6 +86,12 @@ export default function NotificationsScreen() {
   const [error, setError] = useState('');
   const [updatingId, setUpdatingId] = useState(null);
   const [markingAll, setMarkingAll] = useState(false);
+  const [updatingPushPermission, setUpdatingPushPermission] = useState(false);
+  const pushPermission = useSyncExternalStore(
+    subscribeToNotificationPermission,
+    getNotificationPermissionSnapshot,
+    getNotificationPermissionSnapshot
+  );
 
   const unreadCount = notifications.length;
   const canMarkAll = unreadCount > 0 && !markingAll;
@@ -116,6 +130,9 @@ export default function NotificationsScreen() {
         loadNotifications({ refresh: true });
       });
       loadNotifications({ signal: controller.signal });
+      if (SHOULD_INITIALIZE_NATIVE_PUSH) {
+        refreshAndroidNotificationPermission().catch(() => {});
+      }
       return () => {
         mountedRef.current = false;
         controller.abort();
@@ -127,6 +144,26 @@ export default function NotificationsScreen() {
   const onRefresh = useCallback(() => {
     loadNotifications({ refresh: true });
   }, [loadNotifications]);
+
+  const handlePushPermissionAction = useCallback(async () => {
+    if (updatingPushPermission) return;
+
+    setUpdatingPushPermission(true);
+    try {
+      if (pushPermission.canAskAgain) {
+        await requestAndroidNotificationPermission();
+      } else {
+        await openAndroidNotificationSettings();
+      }
+    } catch {
+      Alert.alert(
+        'Unable to change notification settings',
+        'Open Android Settings and allow notifications for PeopleHRSync.'
+      );
+    } finally {
+      setUpdatingPushPermission(false);
+    }
+  }, [pushPermission.canAskAgain, updatingPushPermission]);
 
   const handleMarkOne = async (notification) => {
     if (notification?.id === undefined || notification?.id === null || updatingId === notification.id || markingAll) return;
@@ -241,6 +278,39 @@ export default function NotificationsScreen() {
             </TouchableOpacity>
           </View>
 
+          {SHOULD_INITIALIZE_NATIVE_PUSH && pushPermission.status === 'denied' ? (
+            <View style={styles.permissionNotice}>
+              <View style={styles.permissionIcon}>
+                <Ionicons name="notifications-off-outline" size={20} color={colors.primary} />
+              </View>
+              <View style={styles.permissionCopy}>
+                <Text style={styles.permissionTitle}>Notifications are turned off</Text>
+                <Text style={styles.permissionText}>
+                  Enable notifications to receive team assignments, reporting-day updates and employee alerts.
+                </Text>
+                <TouchableOpacity
+                  style={styles.permissionButton}
+                  onPress={handlePushPermissionAction}
+                  disabled={updatingPushPermission}
+                  activeOpacity={0.78}
+                  accessibilityRole="button"
+                  accessibilityLabel={pushPermission.canAskAgain
+                    ? 'Enable notifications'
+                    : 'Open Android notification settings'}
+                  accessibilityState={{ busy: updatingPushPermission }}
+                >
+                  {updatingPushPermission ? (
+                    <ActivityIndicator size="small" color={colors.white} />
+                  ) : (
+                    <Text style={styles.permissionButtonText}>
+                      {pushPermission.canAskAgain ? 'Enable notifications' : 'Open Settings'}
+                    </Text>
+                  )}
+                </TouchableOpacity>
+              </View>
+            </View>
+          ) : null}
+
           {loading && (
             <View style={styles.loadingCard}>
               <ActivityIndicator color={colors.primary} />
@@ -306,6 +376,57 @@ const styles = StyleSheet.create({
   titleCopy: {
     flex: 1,
     minWidth: 0,
+  },
+  permissionNotice: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: spacing.lg,
+    marginBottom: spacing.xxl,
+    padding: spacing.lg,
+    borderRadius: radii.compactCard,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    ...shadows.subtle,
+  },
+  permissionIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.tealTintSoft,
+  },
+  permissionCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  permissionTitle: {
+    color: colors.textPrimary,
+    fontSize: fontSizes.body,
+    fontWeight: fontWeights.extraBold,
+  },
+  permissionText: {
+    marginTop: spacing.sm,
+    color: colors.textSecondary,
+    fontSize: fontSizes.base,
+    lineHeight: 19,
+  },
+  permissionButton: {
+    alignSelf: 'flex-start',
+    minHeight: sizes.minTouchTarget,
+    minWidth: 132,
+    marginTop: spacing.lg,
+    paddingHorizontal: spacing.xl,
+    borderRadius: radii.pill,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.primary,
+  },
+  permissionButtonText: {
+    color: colors.white,
+    fontSize: fontSizes.base,
+    fontWeight: fontWeights.extraBold,
   },
   screenTitle: {
     color: colors.textPrimary,

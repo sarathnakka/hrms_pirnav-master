@@ -9,7 +9,7 @@
   "distribution": "internal",
   "env": {
     "EXPO_PUBLIC_API_BASE_URL": "https://peoplehrsync.com",
-    "EXPO_PUBLIC_ENABLE_FCM_PUSH": "false",
+    "EXPO_PUBLIC_ENABLE_FCM_PUSH": "true",
     "EXPO_PUBLIC_FCM_REGISTRATION_DIAGNOSTICS": "false"
   }
 },

@@ -94,7 +94,9 @@ export function getNotificationResponseKey(response) {
 }
 
 export function getNotificationTimingInfo(response, now = Date.now()) {
-  const remoteMessage = response?.notification?.request?.trigger?.remoteMessage;
+  const request = response?.notification?.request || response?.request;
+  const trigger = request?.trigger;
+  const remoteMessage = trigger?.remoteMessage;
   const eventTime = remoteMessage?.notification?.eventTime;
   const sentTime = remoteMessage?.sentTime;
   const eventTimestamp = eventTime === null || eventTime === undefined
@@ -104,27 +106,64 @@ export function getNotificationTimingInfo(response, now = Date.now()) {
     ? NaN
     : Number(sentTime);
 
-  if (Number.isFinite(eventTimestamp)) {
-    const ageMs = now - eventTimestamp;
-    const isSuspicious = ageMs > 7 * 24 * 60 * 60 * 1000 || ageMs < -5 * 60 * 1000;
+  const isRemoteNotification = Boolean(remoteMessage) || trigger?.type === 'push';
+
+  if (!isRemoteNotification) {
     return {
-      source: 'FCM event_time',
-      status: isSuspicious ? 'Suspicious event time' : 'Event time plausible',
+      delivery: 'App/local notification',
+      source: 'Local trigger',
+      status: 'No FCM timestamp metadata',
     };
   }
 
-  if (Number.isFinite(sentTimestamp)) {
+  if (eventTime !== null && eventTime !== undefined) {
+    if (!Number.isFinite(eventTimestamp)) {
+      return {
+        delivery: 'FCM remote notification',
+        source: 'FCM event_time',
+        status: 'Invalid event_time value',
+      };
+    }
+
+    const ageMs = now - eventTimestamp;
+    const isSuspicious = ageMs > 7 * 24 * 60 * 60 * 1000 || ageMs < -5 * 60 * 1000;
+    return {
+      delivery: 'FCM remote notification',
+      source: 'FCM event_time',
+      status: isSuspicious
+        ? ageMs > 0
+          ? 'Suspicious event_time: unreasonably old'
+          : 'Suspicious event_time: in the future'
+        : 'Event time plausible',
+    };
+  }
+
+  if (sentTime !== null && sentTime !== undefined) {
+    if (!Number.isFinite(sentTimestamp)) {
+      return {
+        delivery: 'FCM remote notification',
+        source: 'FCM sent_time',
+        status: 'event_time absent; invalid sent_time',
+      };
+    }
+
     const ageMs = now - sentTimestamp;
     const isSuspicious = ageMs > 7 * 24 * 60 * 60 * 1000 || ageMs < -5 * 60 * 1000;
     return {
-      source: 'FCM sent time',
-      status: isSuspicious ? 'Suspicious sent time' : 'Sent time plausible',
+      delivery: 'FCM remote notification',
+      source: 'FCM sent_time',
+      status: isSuspicious
+        ? ageMs > 0
+          ? 'event_time absent; sent_time unreasonably old'
+          : 'event_time absent; sent_time in the future'
+        : 'event_time absent; sent_time plausible',
     };
   }
 
   return {
-    source: 'Unavailable',
-    status: 'Timestamp unavailable',
+    delivery: 'FCM remote notification',
+    source: 'FCM metadata',
+    status: 'event_time absent; sent_time unavailable',
   };
 }
 

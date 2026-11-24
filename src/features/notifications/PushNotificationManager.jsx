@@ -8,13 +8,14 @@ import {
 } from '../../app/navigation/navigationRef';
 import { useAuth } from '../auth/AuthContext';
 import FcmRegistrationDiagnosticsPanel from './FcmRegistrationDiagnosticsPanel';
+import NotificationPermissionOnboardingCard from './NotificationPermissionOnboardingCard';
 import { updateFcmDiagnostics } from './fcmRegistrationDiagnostics';
 import {
   addForegroundNotificationListener,
+  addNotificationPermissionListener,
   addNativePushTokenListener,
   addNotificationResponseListener,
   clearLastNotificationResponse,
-  getCurrentNativePushToken,
   getLastNotificationResponse,
   getNotificationResponseKey,
   getNotificationRoutingInfo,
@@ -84,12 +85,6 @@ export default function PushNotificationManager({
         registrationSkipped: 'Stale authenticated session',
         backendRegistration: 'Not attempted',
       });
-      return;
-    }
-
-    const availableToken = getCurrentNativePushToken();
-    if (availableToken) {
-      await registerCurrentDevice(availableToken, expectedSessionToken);
       return;
     }
 
@@ -192,6 +187,7 @@ export default function PushNotificationManager({
     const timing = getNotificationTimingInfo(response);
     updateFcmDiagnostics('NOTIFICATION_TAP_RECEIVED', {
       navigationStatus: 'Tap received',
+      notificationDelivery: timing.delivery,
       notificationTimeSource: timing.source,
       notificationTimeStatus: timing.status,
     });
@@ -300,7 +296,7 @@ export default function PushNotificationManager({
       processPendingNavigation();
     }
 
-    if (nextSessionToken) {
+    if (nextSessionToken && navigationReady) {
       registerForSession(nextSessionToken);
     }
   }, [
@@ -317,13 +313,29 @@ export default function PushNotificationManager({
   }, [navigationReady, navigationStateVersion, processPendingNavigation]);
 
   useEffect(() => {
+    if (!isAuthenticated) {
+      return undefined;
+    }
+
     const tokenSubscription = addNativePushTokenListener((nativeToken) => {
       const currentSessionToken = sessionTokenRef.current;
       if (currentSessionToken) {
         registerCurrentDevice(nativeToken, currentSessionToken);
       }
     });
-    const foregroundSubscription = addForegroundNotificationListener();
+    const permissionSubscription = addNotificationPermissionListener((permission) => {
+      if (permission.status === 'granted' && sessionTokenRef.current) {
+        registerForSession(sessionTokenRef.current);
+      }
+    });
+    const foregroundSubscription = addForegroundNotificationListener((notification) => {
+      const timing = getNotificationTimingInfo(notification);
+      updateFcmDiagnostics('FOREGROUND_NOTIFICATION_RECEIVED', {
+        notificationDelivery: timing.delivery,
+        notificationTimeSource: timing.source,
+        notificationTimeStatus: timing.status,
+      });
+    });
     const responseSubscription = addNotificationResponseListener(handleResponse);
 
     getLastNotificationResponse()
@@ -332,10 +344,11 @@ export default function PushNotificationManager({
 
     return () => {
       tokenSubscription.remove();
+      permissionSubscription.remove();
       foregroundSubscription.remove();
       responseSubscription.remove();
     };
-  }, [handleResponse, registerCurrentDevice]);
+  }, [handleResponse, isAuthenticated, registerCurrentDevice, registerForSession]);
 
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (nextState) => {
@@ -347,5 +360,10 @@ export default function PushNotificationManager({
     return () => subscription.remove();
   }, [registerForSession]);
 
-  return <FcmRegistrationDiagnosticsPanel />;
+  return (
+    <>
+      {isAuthenticated ? <NotificationPermissionOnboardingCard /> : null}
+      <FcmRegistrationDiagnosticsPanel />
+    </>
+  );
 }

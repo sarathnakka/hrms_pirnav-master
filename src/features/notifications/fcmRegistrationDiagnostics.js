@@ -1,4 +1,7 @@
-import { FCM_REGISTRATION_DIAGNOSTICS_ENABLED } from './nativePushConfig';
+import {
+  FCM_REGISTRATION_DIAGNOSTICS_ENABLED,
+  NATIVE_FCM_PUSH_ENABLED,
+} from './nativePushConfig';
 
 const listeners = new Set();
 
@@ -8,7 +11,22 @@ const initialSnapshot = {
   managerMounted: 'No',
   employeeAuthenticated: 'No',
   jwtAvailable: 'No',
+  osApiLevel: 'Unavailable',
+  fcmBuildFlag: NATIVE_FCM_PUSH_ENABLED ? 'Enabled' : 'Disabled',
+  notificationChannel: 'Pending',
   permission: 'Undetermined',
+  permissionGranted: 'No',
+  permissionCanAskAgain: 'Unknown',
+  permissionOnboardingPresented: 'Unknown',
+  legacyOnboardingState: 'Unknown',
+  rolloutOnboardingState: 'Not evaluated',
+  upgradeOnboardingEligible: 'No',
+  upgradeOnboardingOffered: 'No',
+  onboardingDecision: 'Not evaluated',
+  permissionPromptAttempted: 'No',
+  permissionPromptResult: 'Not attempted',
+  permissionRequestTriggered: 'No',
+  permissionRequestResult: 'Not attempted',
   nativeToken: 'Unavailable',
   installationId: 'Pending',
   registrationTriggered: 'No',
@@ -24,6 +42,7 @@ const initialSnapshot = {
   notificationScreen: 'Unavailable',
   notificationTarget: 'None',
   navigationStatus: 'Not requested',
+  notificationDelivery: 'Not inspected',
   notificationTimeSource: 'Unavailable',
   notificationTimeStatus: 'Not inspected',
   lastStage: 'WAITING',

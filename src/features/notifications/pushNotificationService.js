@@ -1,4 +1,4 @@
-import { Platform } from 'react-native';
+import { Linking, Platform } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 
 import { apiClient } from '../../services/apiClient';
@@ -6,7 +6,13 @@ import {
   resetFcmDiagnostics,
   updateFcmDiagnostics,
 } from './fcmRegistrationDiagnostics';
+import { NATIVE_FCM_PUSH_ENABLED } from './nativePushConfig';
 import { emitNotificationRefresh } from './notificationRefreshEvents';
+import {
+  getNotificationOnboardingDecision,
+  isLegacyNotificationOnboardingPresented,
+  NOTIFICATION_ONBOARDING_ACTIONS,
+} from './notificationPermissionPolicy';
 
 export const HRMS_NOTIFICATION_CHANNEL_ID = 'hrms_updates';
 
@@ -19,8 +25,14 @@ export {
 const DEVICE_REGISTRATION_ENDPOINT = '/api/user-notifications/devices';
 const DEVICE_UNREGISTRATION_TIMEOUT_MS = 8000;
 const INSTALLATION_ID_KEY = 'peoplehrsync_installation_id';
+const NOTIFICATION_PERMISSION_ONBOARDING_KEY =
+  'peoplehrsync_notification_permission_onboarding_v1';
+const NOTIFICATION_ONBOARDING_CAMPAIGN = 'peoplehrsync-fcm-launch-v1';
+const NOTIFICATION_ONBOARDING_CAMPAIGN_KEY =
+  'peoplehrsync_notification_onboarding_campaign';
 
 const pendingRegistrations = [];
+const permissionListeners = new Set();
 let notificationsModule = null;
 let notificationHandlerConfigured = false;
 let currentNativePushToken = '';
@@ -30,6 +42,22 @@ let registrationGeneration = 0;
 let registeredDeviceToken = '';
 let registeredSessionToken = '';
 let blockedRegistrationSessionToken = '';
+let legacyNotificationOnboardingPresented = null;
+let notificationRolloutState = null;
+let notificationRolloutStateLoaded = false;
+let notificationPermissionPromptAttemptedThisRuntime = false;
+let notificationPermissionRequestPromise = null;
+let notificationPermissionSnapshot = {
+  status: 'unknown',
+  granted: false,
+  canAskAgain: false,
+  legacyOnboardingPresented: false,
+  rolloutState: '',
+  upgradeOnboardingEligible: false,
+  upgradeOnboardingOffered: false,
+  showUpgradeOnboarding: false,
+  onboardingReason: 'not-evaluated',
+};
 
 function getNotificationsModule() {
   if (!notificationsModule) {
@@ -57,6 +85,132 @@ function normalizeToken(token) {
 
 function normalizeString(value) {
   return typeof value === 'string' ? value.trim() : '';
+}
+
+function publishNotificationPermission(permission) {
+  const rawStatus = normalizeString(permission?.status).toLowerCase() || 'unknown';
+  const granted = permission?.granted === true || rawStatus === 'granted';
+  const status = granted ? 'granted' : rawStatus;
+  const nextSnapshot = {
+    ...notificationPermissionSnapshot,
+    status,
+    granted,
+    canAskAgain: permission?.canAskAgain === true,
+  };
+  const permissionWasGranted = notificationPermissionSnapshot.status === 'granted';
+
+  notificationPermissionSnapshot = nextSnapshot;
+
+  if (status !== 'granted' && permissionWasGranted) {
+    // A later grant must POST again even when the native token itself did not rotate.
+    registrationGeneration += 1;
+    registeredDeviceToken = '';
+    registeredSessionToken = '';
+    pendingRegistrations.length = 0;
+  }
+
+  permissionListeners.forEach((listener) => listener());
+  return nextSnapshot;
+}
+
+function publishNotificationOnboarding(values) {
+  notificationPermissionSnapshot = {
+    ...notificationPermissionSnapshot,
+    ...values,
+  };
+  permissionListeners.forEach((listener) => listener());
+  return notificationPermissionSnapshot;
+}
+
+async function getLegacyNotificationOnboardingPresented() {
+  if (legacyNotificationOnboardingPresented !== null) {
+    return legacyNotificationOnboardingPresented;
+  }
+
+  try {
+    const storedValue = await SecureStore.getItemAsync(
+      NOTIFICATION_PERMISSION_ONBOARDING_KEY
+    );
+    legacyNotificationOnboardingPresented =
+      isLegacyNotificationOnboardingPresented(storedValue);
+  } catch {
+    legacyNotificationOnboardingPresented = false;
+  }
+
+  return legacyNotificationOnboardingPresented;
+}
+
+async function getNotificationRolloutState() {
+  if (notificationRolloutStateLoaded) {
+    return notificationRolloutState || '';
+  }
+
+  notificationRolloutStateLoaded = true;
+
+  try {
+    const storedValue = normalizeString(
+      await SecureStore.getItemAsync(NOTIFICATION_ONBOARDING_CAMPAIGN_KEY)
+    );
+    const parsed = storedValue ? JSON.parse(storedValue) : null;
+    notificationRolloutState =
+      parsed?.campaign === NOTIFICATION_ONBOARDING_CAMPAIGN
+        ? normalizeString(parsed?.state).toLowerCase()
+        : '';
+  } catch {
+    notificationRolloutState = '';
+  }
+
+  return notificationRolloutState;
+}
+
+async function setNotificationRolloutState(state) {
+  const normalizedState = normalizeString(state).toLowerCase();
+  notificationRolloutState = normalizedState;
+  notificationRolloutStateLoaded = true;
+
+  try {
+    await SecureStore.setItemAsync(
+      NOTIFICATION_ONBOARDING_CAMPAIGN_KEY,
+      JSON.stringify({
+        campaign: NOTIFICATION_ONBOARDING_CAMPAIGN,
+        state: normalizedState,
+      })
+    );
+  } catch {
+    // Runtime state still prevents repeated onboarding during this app session.
+  }
+
+  publishNotificationOnboarding({
+    rolloutState: normalizedState,
+    upgradeOnboardingEligible: false,
+    showUpgradeOnboarding: false,
+  });
+}
+
+async function requestNotificationPermissionSingleFlight(Notifications) {
+  if (!notificationPermissionRequestPromise) {
+    notificationPermissionRequestPromise = Notifications.requestPermissionsAsync()
+      .finally(() => {
+        notificationPermissionRequestPromise = null;
+      });
+  }
+
+  return notificationPermissionRequestPromise;
+}
+
+export function getNotificationPermissionSnapshot() {
+  return notificationPermissionSnapshot;
+}
+
+export function subscribeToNotificationPermission(listener) {
+  permissionListeners.add(listener);
+  return () => permissionListeners.delete(listener);
+}
+
+export function addNotificationPermissionListener(listener) {
+  const wrappedListener = () => listener?.(notificationPermissionSnapshot);
+  permissionListeners.add(wrappedListener);
+  return { remove: () => permissionListeners.delete(wrappedListener) };
 }
 
 function getSafeHost(url) {
@@ -184,6 +338,14 @@ export function registerDeviceToken(fcmToken, sessionToken) {
       backendRegistration: 'Not attempted',
     });
     return Promise.resolve({ status: 'unsupported' });
+  }
+
+  if (notificationPermissionSnapshot.status !== 'granted') {
+    updateFcmDiagnostics('REGISTRATION_SKIPPED', {
+      registrationSkipped: 'Notification permission not granted',
+      backendRegistration: 'Not attempted',
+    });
+    return Promise.resolve({ status: 'skipped', reason: 'permission-not-granted' });
   }
 
   if (!deviceToken) {
@@ -486,7 +648,78 @@ export function unregisterDeviceToken(sessionToken) {
   return unregistrationPromise;
 }
 
-export async function initializeAndroidPushNotifications() {
+async function ensureAndroidNotificationChannel(Notifications) {
+  await Notifications.setNotificationChannelAsync(HRMS_NOTIFICATION_CHANNEL_ID, {
+    name: 'PeopleHRSync Updates',
+    importance: Notifications.AndroidImportance.HIGH,
+    vibrationPattern: [0, 250, 250, 250],
+    lightColor: '#087BAE',
+  });
+
+  updateFcmDiagnostics('NOTIFICATION_CHANNEL_READY', {
+    osApiLevel: String(Platform.Version),
+    fcmBuildFlag: NATIVE_FCM_PUSH_ENABLED ? 'Enabled' : 'Disabled',
+    notificationChannel: 'Ready',
+  });
+}
+
+export async function refreshAndroidNotificationPermission() {
+  if (Platform.OS !== 'android') {
+    return publishNotificationPermission({
+      status: 'unsupported',
+      canAskAgain: false,
+    });
+  }
+
+  const Notifications = getNotificationsModule();
+  const permission = await Notifications.getPermissionsAsync();
+  const snapshot = publishNotificationPermission(permission);
+  updateFcmDiagnostics('FCM_PERMISSION_CHECKED', {
+    permission: snapshot.status,
+    permissionGranted: snapshot.granted ? 'Yes' : 'No',
+    permissionCanAskAgain: snapshot.canAskAgain ? 'Yes' : 'No',
+  });
+  return snapshot;
+}
+
+export async function openAndroidNotificationSettings() {
+  if (Platform.OS !== 'android') {
+    return false;
+  }
+
+  await Linking.openSettings();
+  return true;
+}
+
+export async function requestAndroidNotificationPermission() {
+  const result = await initializeAndroidPushNotifications({ userInitiated: true });
+  if (result?.requiresSettings) {
+    await openAndroidNotificationSettings();
+  }
+  return result;
+}
+
+export function markUpgradeNotificationOnboardingOffered() {
+  if (!notificationPermissionSnapshot.showUpgradeOnboarding) {
+    return;
+  }
+
+  publishNotificationOnboarding({ upgradeOnboardingOffered: true });
+  updateFcmDiagnostics('UPGRADE_ONBOARDING_OFFERED', {
+    upgradeOnboardingOffered: 'Yes',
+  });
+}
+
+export async function dismissNotificationPermissionOnboarding() {
+  await setNotificationRolloutState('dismissed');
+  updateFcmDiagnostics('UPGRADE_ONBOARDING_DISMISSED', {
+    rolloutOnboardingState: 'Dismissed',
+    upgradeOnboardingEligible: 'No',
+    upgradeOnboardingOffered: 'Yes',
+  });
+}
+
+export async function initializeAndroidPushNotifications({ userInitiated = false } = {}) {
   if (Platform.OS !== 'android') {
     updateFcmDiagnostics('REGISTRATION_SKIPPED', {
       permission: 'Unsupported platform',
@@ -496,32 +729,161 @@ export async function initializeAndroidPushNotifications() {
   }
 
   const Notifications = getNotificationsModule();
-
-  await Notifications.setNotificationChannelAsync(HRMS_NOTIFICATION_CHANNEL_ID, {
-    name: 'PeopleHRSync Updates',
-    importance: Notifications.AndroidImportance.HIGH,
-    vibrationPattern: [0, 250, 250, 250],
-    lightColor: '#087BAE',
-  });
+  await ensureAndroidNotificationChannel(Notifications);
 
   const existingPermission = await Notifications.getPermissionsAsync();
-  let permission = existingPermission;
-  updateFcmDiagnostics('FCM_PERMISSION_CHECKED', {
-    permission: existingPermission.status || 'Undetermined',
+  let permissionSnapshot = publishNotificationPermission(existingPermission);
+  const [legacyOnboardingPresented, rolloutState] = await Promise.all([
+    getLegacyNotificationOnboardingPresented(),
+    getNotificationRolloutState(),
+  ]);
+
+  const onboardingDecision = getNotificationOnboardingDecision({
+    granted: permissionSnapshot.granted,
+    canAskAgain: permissionSnapshot.canAskAgain,
+    legacyOnboardingPresented,
+    rolloutState,
+    promptAttemptedThisRuntime: notificationPermissionPromptAttemptedThisRuntime,
+    userInitiated,
   });
 
-  if (existingPermission.status === 'undetermined') {
-    permission = await Notifications.requestPermissionsAsync();
+  const upgradeOnboardingEligible =
+    onboardingDecision.action === NOTIFICATION_ONBOARDING_ACTIONS.OFFER_UPGRADE;
+
+  permissionSnapshot = publishNotificationOnboarding({
+    legacyOnboardingPresented,
+    rolloutState,
+    upgradeOnboardingEligible,
+    upgradeOnboardingOffered: upgradeOnboardingEligible
+      ? notificationPermissionSnapshot.upgradeOnboardingOffered
+      : false,
+    showUpgradeOnboarding: upgradeOnboardingEligible,
+    onboardingReason: onboardingDecision.reason,
+  });
+
+  updateFcmDiagnostics('FCM_PERMISSION_CHECKED', {
+    permission: permissionSnapshot.status,
+    permissionGranted: permissionSnapshot.granted ? 'Yes' : 'No',
+    permissionCanAskAgain: permissionSnapshot.canAskAgain ? 'Yes' : 'No',
+    permissionOnboardingPresented: legacyOnboardingPresented ? 'Yes' : 'No',
+    legacyOnboardingState: legacyOnboardingPresented ? 'Presented (ambiguous)' : 'Not present',
+    rolloutOnboardingState: rolloutState || 'Not handled',
+    upgradeOnboardingEligible: upgradeOnboardingEligible ? 'Yes' : 'No',
+    upgradeOnboardingOffered: permissionSnapshot.upgradeOnboardingOffered ? 'Yes' : 'No',
+    onboardingDecision: onboardingDecision.reason,
+  });
+
+  if (
+    onboardingDecision.action ===
+    NOTIFICATION_ONBOARDING_ACTIONS.REQUEST_PERMISSION
+  ) {
+    notificationPermissionPromptAttemptedThisRuntime = true;
+    updateFcmDiagnostics('FCM_PERMISSION_PROMPT_REQUESTED', {
+      permissionPromptAttempted: 'Yes',
+      permissionRequestTriggered: 'Yes',
+      permissionPromptResult: 'Awaiting response',
+      permissionRequestResult: 'Awaiting response',
+    });
+
+    let requestedPermission;
+    try {
+      requestedPermission = await requestNotificationPermissionSingleFlight(
+        Notifications
+      );
+    } catch (error) {
+      publishNotificationOnboarding({
+        upgradeOnboardingEligible: true,
+        showUpgradeOnboarding: true,
+        onboardingReason: 'permission-request-failed',
+      });
+      updateFcmDiagnostics('FCM_PERMISSION_PROMPT_FAILED', {
+        permissionPromptResult: 'Request failed',
+        permissionRequestResult: 'Request failed',
+        upgradeOnboardingEligible: 'Yes',
+      });
+      throw error;
+    }
+
+    permissionSnapshot = publishNotificationPermission(requestedPermission);
+    const requestResultState = permissionSnapshot.granted ? 'granted' : 'denied';
+    await setNotificationRolloutState(requestResultState);
+    permissionSnapshot = getNotificationPermissionSnapshot();
+    updateFcmDiagnostics('FCM_PERMISSION_PROMPT_COMPLETED', {
+      permission: permissionSnapshot.status,
+      permissionGranted: permissionSnapshot.granted ? 'Yes' : 'No',
+      permissionCanAskAgain: permissionSnapshot.canAskAgain ? 'Yes' : 'No',
+      permissionOnboardingPresented: 'Yes',
+      permissionPromptResult: permissionSnapshot.granted ? 'Granted' : 'Denied',
+      permissionRequestResult: permissionSnapshot.granted ? 'Granted' : 'Denied',
+      rolloutOnboardingState: permissionSnapshot.granted ? 'Granted' : 'Denied',
+      upgradeOnboardingEligible: 'No',
+    });
+  } else if (
+    onboardingDecision.action === NOTIFICATION_ONBOARDING_ACTIONS.REGISTER
+  ) {
+    if (rolloutState !== 'granted') {
+      await setNotificationRolloutState('granted');
+      permissionSnapshot = getNotificationPermissionSnapshot();
+    }
+    updateFcmDiagnostics('FCM_PERMISSION_PROMPT_SKIPPED', {
+      permissionPromptAttempted: 'No',
+      permissionRequestTriggered: 'No',
+      permissionPromptResult: 'Already granted',
+      permissionRequestResult: 'Already granted',
+      rolloutOnboardingState: 'Granted',
+      upgradeOnboardingEligible: 'No',
+    });
+  } else if (
+    onboardingDecision.action === NOTIFICATION_ONBOARDING_ACTIONS.OFFER_UPGRADE
+  ) {
+    updateFcmDiagnostics('UPGRADE_ONBOARDING_ELIGIBLE', {
+      permissionPromptAttempted: 'No',
+      permissionRequestTriggered: 'No',
+      permissionPromptResult: 'Waiting for employee action',
+      permissionRequestResult: 'Not attempted',
+      upgradeOnboardingEligible: 'Yes',
+      upgradeOnboardingOffered: permissionSnapshot.upgradeOnboardingOffered
+        ? 'Yes'
+        : 'No',
+    });
+  } else if (
+    onboardingDecision.action === NOTIFICATION_ONBOARDING_ACTIONS.OPEN_SETTINGS
+  ) {
+    publishNotificationOnboarding({
+      upgradeOnboardingEligible: true,
+      showUpgradeOnboarding: true,
+      onboardingReason: 'os-cannot-ask-again',
+    });
+    updateFcmDiagnostics('NOTIFICATION_SETTINGS_REQUIRED', {
+      permissionPromptAttempted: 'No',
+      permissionRequestTriggered: 'No',
+      permissionPromptResult: 'Android Settings required',
+      permissionRequestResult: 'Android Settings required',
+      upgradeOnboardingEligible: 'Yes',
+    });
+  } else {
+    updateFcmDiagnostics('FCM_PERMISSION_PROMPT_SKIPPED', {
+      permissionPromptAttempted: 'No',
+      permissionRequestTriggered: 'No',
+      permissionPromptResult: onboardingDecision.reason,
+      permissionRequestResult: 'Not attempted',
+    });
   }
 
-  if (permission.status !== 'granted') {
+  if (!permissionSnapshot.granted) {
     updateFcmDiagnostics('FCM_PERMISSION_DENIED', {
-      permission: permission.status || 'Denied',
+      permission: permissionSnapshot.status,
       nativeToken: 'Unavailable',
       registrationSkipped: 'Notification permission not granted',
       backendRegistration: 'Not attempted',
     });
-    return { status: permission.status || 'denied', token: '' };
+    return {
+      ...permissionSnapshot,
+      token: '',
+      requiresSettings:
+        onboardingDecision.action ===
+        NOTIFICATION_ONBOARDING_ACTIONS.OPEN_SETTINGS,
+    };
   }
 
   updateFcmDiagnostics('FCM_PERMISSION_GRANTED', { permission: 'Granted' });
@@ -529,7 +891,7 @@ export async function initializeAndroidPushNotifications() {
   try {
     const devicePushToken = await Notifications.getDevicePushTokenAsync();
     const token = acceptNativePushToken(devicePushToken);
-    return { status: 'granted', token };
+    return { ...permissionSnapshot, token };
   } catch (error) {
     updateFcmDiagnostics('FCM_TOKEN_ERROR', {
       nativeToken: 'Unavailable',
