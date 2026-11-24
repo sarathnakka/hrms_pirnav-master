@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   Alert,
   Image,
+  Keyboard,
   Linking,
   Modal,
   KeyboardAvoidingView,
@@ -36,12 +37,14 @@ import {
   EMPTY_EDUCATION,
   EMPTY_EXPERIENCE,
   EMPTY_PERSONAL,
+  EMPTY_SALARY,
   GENDER_OPTIONS,
   MARITAL_OPTIONS,
   QUALIFICATION_OPTIONS,
   STEPS,
   buildBankPayload,
   buildPersonalPayload,
+  buildSalaryPayload,
   dateOnly,
   educationPayload,
   experiencePayload,
@@ -51,6 +54,7 @@ import {
   formatFileSizeMB,
   maskLastFour,
   maskPan,
+  hasSalaryStructure,
   isAgreementSignedStatus,
   mergeAgreementsWithLifecycle,
   normalizeAgreements,
@@ -58,8 +62,11 @@ import {
   normalizeDepartments,
   normalizeDocuments,
   normalizeEmployeeProfile,
+  normalizeSalaryStructure,
+  validateSalaryStructure,
 } from './employeeProfileMappers';
 import {
+  createEmployeeSalaryStructure,
   deleteEmployeeDocument,
   downloadEmployeeDocument,
   downloadSignedAgreementDocument,
@@ -67,6 +74,7 @@ import {
   getAgreementTemplates,
   getDocumentChecklist,
   getEmployeeDocuments,
+  getEmployeeSalaryStructure,
   getMyEmployeeDetails,
   getPendingAgreements,
   getSignedAgreements,
@@ -75,6 +83,7 @@ import {
   saveExperienceCollection,
   savePersonalInfo,
   signEmployeeAgreement,
+  updateEmployeeSalaryStructure,
   uploadEmployeeDocument,
   viewAgreementDocument,
   viewEmployeeDocument,
@@ -377,6 +386,19 @@ function firstError(errors) {
   return Object.values(errors).find(Boolean) || 'Please review the highlighted fields.';
 }
 
+function isDuplicateSalaryRecordError(error) {
+  if (error?.status !== 400) return false;
+  const message = String(
+    error?.data?.message ||
+    error?.data?.error ||
+    error?.data?.title ||
+    error?.data ||
+    error?.message ||
+    ''
+  ).toLowerCase();
+  return message.includes('already');
+}
+
 const STEP_LABELS = ['Personal', 'Bank', 'Education', 'Experience', 'Documents', 'Review'];
 
 function Stepper({ step, maxStep, onStepPress, completedStepIndexes = [], showCompletion = false }) {
@@ -457,11 +479,28 @@ function Stepper({ step, maxStep, onStepPress, completedStepIndexes = [], showCo
   );
 }
 
-function Field({ label, value, onChangeText, error, keyboardType, secureTextEntry, editable = true, multiline = false, autoCapitalize = 'sentences' }) {
+function Field({
+  label,
+  value,
+  onChangeText,
+  error,
+  keyboardType,
+  secureTextEntry,
+  editable = true,
+  multiline = false,
+  autoCapitalize = 'sentences',
+  maxLength,
+  placeholder,
+  onFocus,
+  onBlur,
+}) {
+  const inputRef = useRef(null);
+
   return (
     <View style={styles.fieldWrap}>
       <Text style={styles.label}>{label}</Text>
       <AppTextInput
+        ref={inputRef}
         style={[styles.input, multiline && styles.multilineInput, error && styles.inputError, !editable && styles.inputDisabled]}
         value={value}
         onChangeText={onChangeText}
@@ -470,6 +509,10 @@ function Field({ label, value, onChangeText, error, keyboardType, secureTextEntr
         keyboardType={keyboardType}
         secureTextEntry={secureTextEntry}
         autoCapitalize={autoCapitalize}
+        maxLength={maxLength}
+        placeholder={placeholder}
+        onFocus={(event) => onFocus?.(event, inputRef.current)}
+        onBlur={(event) => onBlur?.(event, inputRef.current)}
         placeholderTextColor={colors.placeholder}
         accessibilityLabel={label}
       />
@@ -524,6 +567,11 @@ function normalizeSelectionOptions(options) {
 function SelectionField({ label, value, options, onChange, error, placeholder = 'Select', searchable = true, disabled = false }) {
   const [visible, setVisible] = useState(false);
   const [query, setQuery] = useState('');
+  const closeSelector = () => {
+    Keyboard.dismiss();
+    setVisible(false);
+    setQuery('');
+  };
   const normalizedOptions = useMemo(() => normalizeSelectionOptions(options), [options]);
   const selected = normalizedOptions.find((option) => String(option.value) === String(value));
   const filteredOptions = useMemo(() => {
@@ -554,15 +602,19 @@ function SelectionField({ label, value, options, onChange, error, placeholder = 
       </TouchableOpacity>
       {!!error && <Text style={styles.errorText}>{error}</Text>}
 
-      <Modal visible={visible} transparent animationType="fade" onRequestClose={() => setVisible(false)}>
-        <View style={styles.modalOverlay}>
+      <Modal visible={visible} transparent animationType="fade" statusBarTranslucent onRequestClose={closeSelector}>
+        <KeyboardAvoidingView
+          style={styles.modalKeyboardAvoider}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        >
+          <View style={styles.modalOverlay}>
           <View style={styles.selectorModal}>
             <View style={styles.selectorHeader}>
               <View>
                 <Text style={styles.selectorTitle}>{label}</Text>
                 <Text style={styles.selectorSubtitle}>Choose one option</Text>
               </View>
-              <TouchableOpacity style={styles.modalClose} onPress={() => setVisible(false)} accessibilityRole="button" accessibilityLabel="Close selector">
+              <TouchableOpacity style={styles.modalClose} onPress={closeSelector} accessibilityRole="button" accessibilityLabel="Close selector">
                 <Ionicons name="close" size={20} color={colors.textSecondary} />
               </TouchableOpacity>
             </View>
@@ -579,7 +631,12 @@ function SelectionField({ label, value, options, onChange, error, placeholder = 
                 />
               </View>
             )}
-            <ScrollView style={styles.selectorList} keyboardShouldPersistTaps="handled">
+            <ScrollView
+              style={styles.selectorList}
+              contentContainerStyle={styles.selectorListContent}
+              keyboardShouldPersistTaps="handled"
+              keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'none'}
+            >
               {filteredOptions.map((option) => {
                 const checked = String(option.value) === String(value);
                 const showGroup = option.group && option.group !== currentGroup;
@@ -595,8 +652,7 @@ function SelectionField({ label, value, options, onChange, error, placeholder = 
                           return;
                         }
                         onChange(option.value);
-                        setVisible(false);
-                        setQuery('');
+                        closeSelector();
                       }}
                       disabled={option.disabled}
                       activeOpacity={0.82}
@@ -615,7 +671,8 @@ function SelectionField({ label, value, options, onChange, error, placeholder = 
               {!filteredOptions.length && <Text style={styles.emptyText}>No options found.</Text>}
             </ScrollView>
           </View>
-        </View>
+          </View>
+        </KeyboardAvoidingView>
       </Modal>
     </View>
   );
@@ -763,6 +820,9 @@ export default function EditEmployeeScreen({ navigation }) {
   const [departments, setDepartments] = useState([]);
   const [personal, setPersonal] = useState(EMPTY_PERSONAL);
   const [bank, setBank] = useState(EMPTY_BANK);
+  const [salary, setSalary] = useState(EMPTY_SALARY);
+  const [salaryStatus, setSalaryStatus] = useState('idle');
+  const [salaryError, setSalaryError] = useState('');
   const [education, setEducation] = useState([EMPTY_EDUCATION]);
   const [experience, setExperience] = useState([EMPTY_EXPERIENCE]);
   const [documents, setDocuments] = useState([]);
@@ -816,6 +876,15 @@ export default function EditEmployeeScreen({ navigation }) {
   const selectedFileRef = useRef(null);
   const capturePreviewRef = useRef(null);
   const mountedRef = useRef(true);
+  const focusedInputRef = useRef(null);
+  const focusRequestRef = useRef(0);
+  const revealFrameRef = useRef(null);
+  const keyboardTopRef = useRef(null);
+  const lastRevealSignatureRef = useRef('');
+  const scrollOffsetRef = useRef(0);
+  const salaryLoadVersionRef = useRef(0);
+  const salaryDirtyRef = useRef(false);
+  const financialSaveLockRef = useRef(false);
 
   const documentTypeOptions = useMemo(() => {
     return documentChecklist.map((item) => ({
@@ -849,6 +918,8 @@ export default function EditEmployeeScreen({ navigation }) {
     documentValidation.status === 'valid' &&
     documentValidation.fileKey === selectedFileKey &&
     documentValidation.documentType === validationDocumentType;
+  const salaryReady = salaryStatus === 'existing' || salaryStatus === 'missing';
+  const salaryFieldErrors = errors.salary || {};
   const markStepCompleted = useCallback((stepIndex) => {
     setCompletedStepIndexes((current) => (
       current.includes(stepIndex) ? current : [...current, stepIndex]
@@ -859,9 +930,109 @@ export default function EditEmployeeScreen({ navigation }) {
     setCompletedStepIndexes([]);
   }, []);
 
+  const cancelScheduledReveal = useCallback(() => {
+    if (revealFrameRef.current !== null) {
+      cancelAnimationFrame(revealFrameRef.current);
+      revealFrameRef.current = null;
+    }
+  }, []);
+
+  const measureAndRevealInput = useCallback((requestId, keyboardTop) => {
+    const focusedInput = focusedInputRef.current;
+    const scroller = scrollRef.current;
+    if (!focusedInput?.measureInWindow || !scroller || requestId !== focusRequestRef.current) return;
+
+    scroller.measureInWindow((scrollX, scrollY, scrollWidth, scrollHeight) => {
+      if (requestId !== focusRequestRef.current || focusedInputRef.current !== focusedInput) return;
+      focusedInput.measureInWindow((inputX, inputY, inputWidth, inputHeight) => {
+        if (requestId !== focusRequestRef.current || focusedInputRef.current !== focusedInput) return;
+
+        const margin = spacing.lg;
+        const viewportTop = scrollY + margin;
+        const resizedViewportBottom = scrollY + scrollHeight;
+        const viewportBottom = Math.min(
+          resizedViewportBottom,
+          Number.isFinite(keyboardTop) ? keyboardTop : resizedViewportBottom
+        ) - margin;
+        const inputBottom = inputY + inputHeight;
+        let delta = 0;
+
+        if (inputY < viewportTop) delta = inputY - viewportTop;
+        else if (inputBottom > viewportBottom) delta = inputBottom - viewportBottom;
+
+        if (Math.abs(delta) < 2) return;
+        const targetOffset = Math.max(0, scrollOffsetRef.current + delta);
+        scrollOffsetRef.current = targetOffset;
+        scroller.scrollTo({ y: targetOffset, animated: true });
+      });
+    });
+  }, []);
+
+  const scheduleFocusedInputReveal = useCallback((requestId, keyboardTop) => {
+    if (!Number.isFinite(keyboardTop) || requestId !== focusRequestRef.current) return;
+    const signature = `${requestId}:${Math.round(keyboardTop)}`;
+    if (lastRevealSignatureRef.current === signature) return;
+
+    lastRevealSignatureRef.current = signature;
+    cancelScheduledReveal();
+    revealFrameRef.current = requestAnimationFrame(() => {
+      revealFrameRef.current = null;
+      measureAndRevealInput(requestId, keyboardTop);
+    });
+  }, [cancelScheduledReveal, measureAndRevealInput]);
+
+  const handleInputFocus = useCallback((event, input) => {
+    if (!input?.measureInWindow) return;
+    const requestId = focusRequestRef.current + 1;
+    focusRequestRef.current = requestId;
+    focusedInputRef.current = input;
+    lastRevealSignatureRef.current = '';
+
+    const metrics = typeof Keyboard.metrics === 'function' ? Keyboard.metrics() : null;
+    const keyboardTop = metrics?.screenY ?? keyboardTopRef.current;
+    if (typeof Keyboard.isVisible === 'function' && Keyboard.isVisible() && Number.isFinite(keyboardTop)) {
+      keyboardTopRef.current = keyboardTop;
+      scheduleFocusedInputReveal(requestId, keyboardTop);
+    }
+  }, [scheduleFocusedInputReveal]);
+
+  const handleInputBlur = useCallback((event, input) => {
+    if (focusedInputRef.current === input) {
+      focusRequestRef.current += 1;
+      focusedInputRef.current = null;
+      lastRevealSignatureRef.current = '';
+      cancelScheduledReveal();
+    }
+  }, [cancelScheduledReveal]);
+
   useEffect(() => {
+    const showSubscription = Keyboard.addListener('keyboardDidShow', (event) => {
+      const keyboardTop = event?.endCoordinates?.screenY;
+      if (!Number.isFinite(keyboardTop) || !focusedInputRef.current) return;
+      keyboardTopRef.current = keyboardTop;
+      scheduleFocusedInputReveal(focusRequestRef.current, keyboardTop);
+    });
+    const hideSubscription = Keyboard.addListener('keyboardDidHide', () => {
+      keyboardTopRef.current = null;
+      lastRevealSignatureRef.current = '';
+      cancelScheduledReveal();
+    });
+    return () => {
+      showSubscription.remove();
+      hideSubscription.remove();
+      cancelScheduledReveal();
+    };
+  }, [cancelScheduledReveal, scheduleFocusedInputReveal]);
+
+  useEffect(() => {
+    focusRequestRef.current += 1;
+    focusedInputRef.current = null;
+    lastRevealSignatureRef.current = '';
+    cancelScheduledReveal();
+    Keyboard.dismiss();
     scrollRef.current?.scrollTo({ y: 0, animated: true });
-  }, [step]);
+    scrollOffsetRef.current = 0;
+  }, [cancelScheduledReveal, step]);
 
   useEffect(() => {
     selectedFileRef.current = selectedFile;
@@ -1152,8 +1323,60 @@ export default function EditEmployeeScreen({ navigation }) {
     }
   }, [token]);
 
+  const loadSalaryForEmployee = useCallback(async (targetEmployeeId, { signal } = {}) => {
+    const requestVersion = ++salaryLoadVersionRef.current;
+    if (!targetEmployeeId || !token) {
+      setSalary({ ...EMPTY_SALARY });
+      setSalaryStatus('idle');
+      setSalaryError('');
+      return 'idle';
+    }
+
+    setSalaryStatus('loading');
+    setSalaryError('');
+    try {
+      const payload = await getEmployeeSalaryStructure(targetEmployeeId, token, { signal });
+      if (
+        signal?.aborted ||
+        !mountedRef.current ||
+        requestVersion !== salaryLoadVersionRef.current ||
+        salaryDirtyRef.current
+      ) {
+        return 'stale';
+      }
+
+      if (hasSalaryStructure(payload)) {
+        setSalary(normalizeSalaryStructure(payload));
+        setSalaryStatus('existing');
+        return 'existing';
+      }
+
+      setSalary({ ...EMPTY_SALARY });
+      setSalaryStatus('missing');
+      return 'missing';
+    } catch (error) {
+      if (signal?.aborted || requestVersion !== salaryLoadVersionRef.current || !mountedRef.current) {
+        return 'stale';
+      }
+      if (error?.status === 404) {
+        setSalary({ ...EMPTY_SALARY });
+        setSalaryStatus('missing');
+        setSalaryError('');
+        return 'missing';
+      }
+      setSalaryStatus('error');
+      setSalaryError(error?.message || 'Unable to load salary structure.');
+      return 'error';
+    }
+  }, [token]);
+
   const loadAll = useCallback(async ({ refresh = false } = {}) => {
     if (!token) {
+      salaryLoadVersionRef.current += 1;
+      salaryDirtyRef.current = false;
+      setSalary({ ...EMPTY_SALARY });
+      setSalaryStatus('idle');
+      setSalaryError('');
       setLoading(false);
       setRefreshing(false);
       return;
@@ -1163,6 +1386,11 @@ export default function EditEmployeeScreen({ navigation }) {
     const controller = new AbortController();
     abortRef.current = controller;
     setApiError('');
+    salaryLoadVersionRef.current += 1;
+    salaryDirtyRef.current = false;
+    setSalary({ ...EMPTY_SALARY });
+    setSalaryStatus('loading');
+    setSalaryError('');
     if (refresh) setRefreshing(true);
     else setLoading(true);
 
@@ -1190,6 +1418,7 @@ export default function EditEmployeeScreen({ navigation }) {
           getEmployeeDocuments(normalizedProfile.employeeId, token, { signal: controller.signal }),
           getDocumentChecklist(normalizedProfile.employeeId, token, { signal: controller.signal }),
           loadAgreementsForEmployee(normalizedProfile.employeeId, { quiet: true, signal: controller.signal }),
+          loadSalaryForEmployee(normalizedProfile.employeeId, { signal: controller.signal }),
         ]);
 
         if (documentResult.status === 'fulfilled') {
@@ -1201,6 +1430,8 @@ export default function EditEmployeeScreen({ navigation }) {
         if (agreementsResult.status !== 'fulfilled' && mountedRef.current) {
           setAgreementError(agreementsResult.reason?.message || 'Unable to load employee agreements.');
         }
+      } else {
+        setSalaryStatus('idle');
       }
     } catch (error) {
       if (!controller.signal.aborted) {
@@ -1213,7 +1444,7 @@ export default function EditEmployeeScreen({ navigation }) {
         setDirty(false);
       }
     }
-  }, [applyProfile, loadAgreementsForEmployee, token]);
+  }, [applyProfile, loadAgreementsForEmployee, loadSalaryForEmployee, token]);
 
   const refreshDocuments = useCallback(async ({ quiet = false } = {}) => {
     if (!employeeId || !token) {
@@ -1344,6 +1575,40 @@ export default function EditEmployeeScreen({ navigation }) {
   const updateBank = (key, value) => {
     if (!isEditMode) return;
     setBank((current) => ({ ...current, [key]: value }));
+    setDirty(true);
+  };
+
+  const updateSalary = (key, value) => {
+    if (!isEditMode) return;
+    if (!/^\d*$/.test(value)) {
+      setErrors((current) => ({
+        ...current,
+        salary: {
+          ...(current.salary || {}),
+          [key]: 'Amount must contain numbers only.',
+        },
+      }));
+      return;
+    }
+    if (value.length > 10) {
+      setErrors((current) => ({
+        ...current,
+        salary: {
+          ...(current.salary || {}),
+          [key]: 'Maximum 10 digits allowed.',
+        },
+      }));
+      return;
+    }
+    setSalary((current) => ({ ...current, [key]: value }));
+    setErrors((current) => ({
+      ...current,
+      salary: {
+        ...(current.salary || {}),
+        [key]: '',
+      },
+    }));
+    salaryDirtyRef.current = true;
     setDirty(true);
   };
 
@@ -1483,23 +1748,74 @@ export default function EditEmployeeScreen({ navigation }) {
     }
   };
 
+  const saveSalaryRecord = async (payload) => {
+    if (salaryStatus === 'existing') {
+      await updateEmployeeSalaryStructure(employeeId, payload, token);
+      salaryDirtyRef.current = false;
+      return;
+    }
+    if (salaryStatus !== 'missing') {
+      throw new Error('Salary status is unavailable. Reload the salary structure before saving.');
+    }
+
+    try {
+      await createEmployeeSalaryStructure(payload, token);
+    } catch (error) {
+      if (!isDuplicateSalaryRecordError(error)) throw error;
+      await updateEmployeeSalaryStructure(employeeId, payload, token);
+    }
+    setSalaryStatus('existing');
+    salaryDirtyRef.current = false;
+  };
+
   const saveBank = async ({ skip = false } = {}) => {
     if (!isEditMode) return;
     if (skip) return goToStep(2);
-    const next = validateBank();
-    if (Object.keys(next).length) return Alert.alert('Validation', firstError(next));
+    if (financialSaveLockRef.current || saving) return;
+    if (!employeeId) return Alert.alert('Employee ID missing', 'Employee ID is unavailable. Refresh your profile and try again.');
+    if (salaryStatus === 'loading') return Alert.alert('Salary is loading', 'Wait for the salary structure to finish loading.');
+    if (salaryStatus === 'error') return Alert.alert('Salary unavailable', 'Retry loading the salary structure before saving.');
+    if (salaryStatus === 'idle') return Alert.alert('Salary unavailable', 'An employee ID is required before salary details can be saved.');
+
+    const bankErrors = validateBank();
+    const salaryErrors = validateSalaryStructure(salary);
+    const next = { ...bankErrors, salary: salaryErrors };
+    setErrors(next);
+    if (Object.keys(bankErrors).length || Object.keys(salaryErrors).length) {
+      return Alert.alert(
+        'Validation',
+        Object.keys(bankErrors).length ? firstError(bankErrors) : firstError(salaryErrors)
+      );
+    }
+
+    const salaryPayload = buildSalaryPayload(salary, employeeId);
+    const salaryNumbers = Object.entries(salaryPayload)
+      .filter(([key]) => !['employee_Id', 'isActive'].includes(key))
+      .map(([, value]) => value);
+    if (!salaryPayload.employee_Id || salaryNumbers.some((value) => !Number.isFinite(value))) {
+      return Alert.alert('Validation', 'Salary details contain an invalid amount.');
+    }
+
+    financialSaveLockRef.current = true;
     setSaving(true);
     setApiError('');
+    let bankSaved = false;
     try {
       await saveBankInfo(buildBankPayload(bank, employeeId), employeeId, profile?.hasBank, token);
+      bankSaved = true;
+      setProfile((current) => current ? { ...current, hasBank: true } : current);
+      await saveSalaryRecord(salaryPayload);
       await afterSave({
         completedStep: 1,
         nextStep: 2,
-        message: 'Bank information updated.',
+        message: 'Bank information and salary structure updated.',
       });
     } catch (error) {
-      setApiError(error?.message || 'Unable to update bank information.');
+      setApiError(bankSaved
+        ? `Bank information was saved, but salary could not be saved. ${error?.message || 'Please retry.'}`
+        : error?.message || 'Unable to update bank information.');
     } finally {
+      financialSaveLockRef.current = false;
       setSaving(false);
     }
   };
@@ -2037,9 +2353,20 @@ export default function EditEmployeeScreen({ navigation }) {
     }
   };
 
-  const ReadOnlyField = useCallback(({ editable = true, ...props }) => (
-    <Field {...props} editable={isEditMode && editable} />
-  ), [isEditMode]);
+  const ReadOnlyField = useCallback(({ editable = true, onFocus, onBlur, ...props }) => (
+    <Field
+      {...props}
+      editable={isEditMode && editable}
+      onFocus={(event, input) => {
+        handleInputFocus(event, input);
+        onFocus?.(event, input);
+      }}
+      onBlur={(event, input) => {
+        handleInputBlur(event, input);
+        onBlur?.(event, input);
+      }}
+    />
+  ), [handleInputBlur, handleInputFocus, isEditMode]);
 
   const ReadOnlyOptionField = useCallback((props) => (
     <OptionField {...props} disabled={!isEditMode} />
@@ -2116,7 +2443,45 @@ export default function EditEmployeeScreen({ navigation }) {
         <ReadOnlyField label="UAN Number" value={bank.uan} onChangeText={(value) => updateBank('uan', value)} />
         <ReadOnlyField label="PF Account Number" value={bank.pf} onChangeText={(value) => updateBank('pf', value)} />
       </Section>
-      <StepActions onBack={() => goToStep(step - 1)} onSkip={() => saveBank({ skip: true })} onNext={() => saveBank()} />
+      <Section title="Salary Structure">
+        <Text style={styles.sectionDescription}>Fill these fields according to your offer letter salary structure.</Text>
+        {salaryStatus === 'loading' && (
+          <View style={styles.inlineLoadingRow}>
+            <ActivityIndicator size="small" color={colors.primary} />
+            <Text style={styles.helperText}>Loading salary structure...</Text>
+          </View>
+        )}
+        {salaryStatus === 'error' && (
+          <TouchableOpacity
+            style={styles.inlineErrorBox}
+            onPress={() => loadSalaryForEmployee(employeeId)}
+            accessibilityRole="button"
+            accessibilityLabel="Retry loading salary structure"
+          >
+            <Ionicons name="alert-circle-outline" size={18} color={colors.employeeEdit.error} />
+            <Text style={styles.inlineErrorText}>{salaryError}</Text>
+            <Text style={styles.inlineRetryText}>Retry</Text>
+          </TouchableOpacity>
+        )}
+        <ReadOnlyField label="Employee ID" value={employeeId} editable={false} />
+        <ReadOnlyField label="Annual CTC (Without Variable Pay)" value={salary.annualCTC} onChangeText={(value) => updateSalary('annualCTC', value)} error={salaryFieldErrors.annualCTC} editable={salaryReady} keyboardType="number-pad" maxLength={10} placeholder="Enter annual CTC" />
+        <ReadOnlyField label="Basic Salary (Monthly)" value={salary.basicSalary} onChangeText={(value) => updateSalary('basicSalary', value)} error={salaryFieldErrors.basicSalary} editable={salaryReady} keyboardType="number-pad" maxLength={10} placeholder="Enter basic salary" />
+        <ReadOnlyField label="HRA (Monthly)" value={salary.hra} onChangeText={(value) => updateSalary('hra', value)} error={salaryFieldErrors.hra} editable={salaryReady} keyboardType="number-pad" maxLength={10} placeholder="Enter HRA amount" />
+        <ReadOnlyField label="Conveyance Allowance (Monthly)" value={salary.conveyanceAllowance} onChangeText={(value) => updateSalary('conveyanceAllowance', value)} error={salaryFieldErrors.conveyanceAllowance} editable={salaryReady} keyboardType="number-pad" maxLength={10} placeholder="Enter conveyance allowance" />
+        <ReadOnlyField label="Medical Allowance (Monthly)" value={salary.medicalAllowance} onChangeText={(value) => updateSalary('medicalAllowance', value)} error={salaryFieldErrors.medicalAllowance} editable={salaryReady} keyboardType="number-pad" maxLength={10} placeholder="Enter medical allowance" />
+        <ReadOnlyField label="Special Allowance (Monthly)" value={salary.specialAllowance} onChangeText={(value) => updateSalary('specialAllowance', value)} error={salaryFieldErrors.specialAllowance} editable={salaryReady} keyboardType="number-pad" maxLength={10} placeholder="Enter special allowance" />
+        <ReadOnlyField label="Employee PF (Monthly)" value={salary.employeePF} onChangeText={(value) => updateSalary('employeePF', value)} error={salaryFieldErrors.employeePF} editable={salaryReady} keyboardType="number-pad" maxLength={10} placeholder="Enter employee PF" />
+        <ReadOnlyField label="Employer PF (Monthly)" value={salary.employerPF} onChangeText={(value) => updateSalary('employerPF', value)} error={salaryFieldErrors.employerPF} editable={salaryReady} keyboardType="number-pad" maxLength={10} placeholder="Enter employer PF" />
+        <ReadOnlyField label="Professional Tax (Monthly)" value={salary.professionalTax} onChangeText={(value) => updateSalary('professionalTax', value)} error={salaryFieldErrors.professionalTax} editable={salaryReady} keyboardType="number-pad" maxLength={10} placeholder="Enter professional tax" />
+        <ReadOnlyField label="TDS (Monthly If Applicable)" value={salary.tds} onChangeText={(value) => updateSalary('tds', value)} error={salaryFieldErrors.tds} editable={salaryReady} keyboardType="number-pad" maxLength={10} placeholder="Enter TDS amount" />
+        <ReadOnlyField label="Other Deduction (Monthly)" value={salary.otherDeduction} onChangeText={(value) => updateSalary('otherDeduction', value)} error={salaryFieldErrors.otherDeduction} editable={salaryReady} keyboardType="number-pad" maxLength={10} placeholder="Enter other deduction" />
+      </Section>
+      <StepActions
+        onBack={() => goToStep(step - 1)}
+        onSkip={() => saveBank({ skip: true })}
+        onNext={() => saveBank()}
+        nextLabel={profile?.hasBank ? 'Update & Next' : 'Save & Next'}
+      />
     </>
   );
 
@@ -2985,17 +3350,19 @@ export default function EditEmployeeScreen({ navigation }) {
   }
 
   return (
-    <KeyboardAvoidingView
-      style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-    >
+    <View style={styles.container}>
       {step === 4 && isEditMode && <DocumentValidationWebView ref={documentValidatorRef} />}
       <ScrollView
         ref={scrollRef}
         contentContainerStyle={[styles.content, { paddingBottom: sizes.floatingTabHeight + insets.bottom + spacing.xxxl * 3 }]}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
-        keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+        keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'none'}
+        automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
+        onScroll={(event) => {
+          scrollOffsetRef.current = event.nativeEvent.contentOffset.y;
+        }}
+        scrollEventThrottle={16}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
@@ -3069,7 +3436,7 @@ export default function EditEmployeeScreen({ navigation }) {
           </View>
         </View>
       </Modal>
-    </KeyboardAvoidingView>
+    </View>
   );
 }
 
@@ -3388,6 +3755,9 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
     backgroundColor: colors.overlay,
   },
+  modalKeyboardAvoider: {
+    flex: 1,
+  },
   selectorModal: {
     maxHeight: '82%',
     padding: spacing.xxl,
@@ -3440,7 +3810,11 @@ const styles = StyleSheet.create({
     fontWeight: fontWeights.semibold,
   },
   selectorList: {
+    flexShrink: 1,
     marginHorizontal: -spacing.md,
+  },
+  selectorListContent: {
+    paddingBottom: spacing.xxl,
   },
   selectorGroup: {
     paddingHorizontal: spacing.md,
@@ -3525,6 +3899,12 @@ const styles = StyleSheet.create({
     color: colors.primary,
     fontSize: fontSizes.sm,
     fontWeight: fontWeights.extraBold,
+  },
+  inlineLoadingRow: {
+    minHeight: sizes.minTouchTarget,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
   },
   actions: {
     gap: spacing.lg,

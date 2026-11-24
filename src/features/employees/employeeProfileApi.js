@@ -9,6 +9,8 @@ const ENDPOINTS = {
   personalByEmployee: (employeeId) => `/api/employeepersonalinfo/${encodeURIComponent(employeeId)}`,
   bank: '/api/EmployeeBankDetails',
   bankByEmployee: (employeeId) => `/api/EmployeeBankDetails/${encodeURIComponent(employeeId)}`,
+  salary: '/api/EmployeeSalaryStructure',
+  salaryByEmployee: (employeeId) => `/api/EmployeeSalaryStructure/${encodeURIComponent(employeeId)}`,
   education: '/api/EmployeeEducation',
   educationByEmployee: (employeeId) => `/api/EmployeeEducation/${encodeURIComponent(employeeId)}`,
   experience: '/api/EmployeeExperience',
@@ -205,6 +207,21 @@ export function saveBankInfo(payload, employeeId, hasExistingData, token, option
     return apiClient.put(ENDPOINTS.bankByEmployee(employeeId), payload, { ...options, token });
   }
   return apiClient.post(ENDPOINTS.bank, payload, { ...options, token });
+}
+
+export function getEmployeeSalaryStructure(employeeId, token, options = {}) {
+  assertId(employeeId, 'Employee ID');
+  return apiClient.get(ENDPOINTS.salaryByEmployee(employeeId), { ...options, token });
+}
+
+export function createEmployeeSalaryStructure(payload, token, options = {}) {
+  assertId(payload?.employee_Id, 'Employee ID');
+  return apiClient.post(ENDPOINTS.salary, payload, { ...options, token });
+}
+
+export function updateEmployeeSalaryStructure(employeeId, payload, token, options = {}) {
+  assertId(employeeId, 'Employee ID');
+  return apiClient.put(ENDPOINTS.salaryByEmployee(employeeId), payload, { ...options, token });
 }
 
 export async function saveEducationCollection(payloadList, employeeId, hasExistingData, token) {

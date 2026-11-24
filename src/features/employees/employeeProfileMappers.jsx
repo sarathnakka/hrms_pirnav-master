@@ -114,6 +114,20 @@ export const EMPTY_BANK = {
   pf: '',
 };
 
+export const EMPTY_SALARY = {
+  annualCTC: '',
+  basicSalary: '',
+  hra: '',
+  conveyanceAllowance: '',
+  medicalAllowance: '',
+  specialAllowance: '',
+  employeePF: '',
+  employerPF: '',
+  professionalTax: '',
+  tds: '',
+  otherDeduction: '',
+};
+
 export const EMPTY_EDUCATION = {
   qualification: '',
   customQualification: '',
@@ -143,6 +157,129 @@ function text(value, fallback = '') {
   if (typeof value === 'string') return value.trim();
   if (typeof value === 'boolean') return value ? 'Yes' : 'No';
   return fallback;
+}
+
+function hasOwn(object, key) {
+  return Object.prototype.hasOwnProperty.call(object || {}, key);
+}
+
+const SALARY_RESPONSE_FIELDS = [
+  'employee_Id',
+  'employeeId',
+  'annualCTC',
+  'basicSalary',
+  'hra',
+  'conveyanceAllowance',
+  'medicalAllowance',
+  'specialAllowance',
+  'employeePF',
+  'employerPF',
+  'professionalTax',
+  'tds',
+  'otherDeduction',
+];
+
+export function hasSalaryStructure(payload) {
+  const root = unwrap(payload);
+  return SALARY_RESPONSE_FIELDS.some((field) => hasOwn(root, field));
+}
+
+export function normalizeSalaryStructure(payload) {
+  const root = unwrap(payload);
+  return {
+    ...EMPTY_SALARY,
+    annualCTC: text(root.annualCTC),
+    basicSalary: text(root.basicSalary),
+    hra: text(root.hra),
+    conveyanceAllowance: text(root.conveyanceAllowance),
+    medicalAllowance: text(root.medicalAllowance),
+    specialAllowance: text(root.specialAllowance),
+    employeePF: text(root.employeePF),
+    employerPF: text(root.employerPF),
+    professionalTax: text(root.professionalTax),
+    tds: text(root.tds),
+    otherDeduction: text(root.otherDeduction),
+  };
+}
+
+export function buildSalaryPayload(form, employeeId) {
+  return {
+    employee_Id: String(employeeId || '').trim(),
+    annualCTC: Number(form.annualCTC),
+    basicSalary: Number(form.basicSalary),
+    hra: Number(form.hra),
+    conveyanceAllowance: Number(form.conveyanceAllowance),
+    medicalAllowance: Number(form.medicalAllowance),
+    specialAllowance: Number(form.specialAllowance),
+    employeePF: Number(form.employeePF),
+    employerPF: Number(form.employerPF),
+    professionalTax: Number(form.professionalTax),
+    tds: form.tds === '' ? 0 : Number(form.tds),
+    otherDeduction: form.otherDeduction === '' ? 0 : Number(form.otherDeduction),
+    isActive: true,
+  };
+}
+
+export function validateSalaryStructure(form) {
+  const errors = {};
+  const requiredRules = [
+    ['annualCTC', 'Annual CTC', 12000],
+    ['basicSalary', 'Basic Salary', 1000],
+    ['hra', 'HRA', 100],
+    ['conveyanceAllowance', 'Conveyance Allowance', 100],
+    ['medicalAllowance', 'Medical Allowance', 100],
+    ['specialAllowance', 'Special Allowance', 100],
+    ['employeePF', 'Employee PF', 100],
+    ['employerPF', 'Employer PF', 100],
+  ];
+
+  requiredRules.forEach(([field, label, minimum]) => {
+    const value = String(form[field] ?? '').trim();
+    if (!value) errors[field] = `${label} is required.`;
+    else if (!/^\d+$/.test(value)) errors[field] = `${label} must contain numbers only.`;
+    else if (value.length > 10) errors[field] = 'Maximum 10 digits allowed.';
+    else if (Number(value) < minimum) errors[field] = `${label} must be at least ₹${minimum.toLocaleString('en-IN')}.`;
+  });
+
+  const professionalTax = String(form.professionalTax ?? '').trim();
+  if (!professionalTax) errors.professionalTax = 'Professional Tax is required.';
+  else if (!/^\d+$/.test(professionalTax)) errors.professionalTax = 'Professional Tax must contain numbers only.';
+  else if (professionalTax.length > 10) errors.professionalTax = 'Maximum 10 digits allowed.';
+  else if (Number(professionalTax) !== 0 && Number(professionalTax) < 100) {
+    errors.professionalTax = 'Professional Tax must be 0 or at least ₹100.';
+  }
+
+  [['tds', 'TDS'], ['otherDeduction', 'Other Deduction']].forEach(([field, label]) => {
+    const value = String(form[field] ?? '').trim();
+    if (!value) return;
+    if (!/^\d+$/.test(value)) errors[field] = `${label} must contain numbers only.`;
+    else if (value.length > 10) errors[field] = 'Maximum 10 digits allowed.';
+  });
+
+  const ctcFields = [
+    'annualCTC',
+    'basicSalary',
+    'hra',
+    'conveyanceAllowance',
+    'medicalAllowance',
+    'specialAllowance',
+    'employerPF',
+  ];
+  if (ctcFields.every((field) => /^\d+$/.test(String(form[field] ?? '').trim()) && !errors[field])) {
+    const expectedAnnualCTC = (
+      Number(form.basicSalary) +
+      Number(form.hra) +
+      Number(form.conveyanceAllowance) +
+      Number(form.medicalAllowance) +
+      Number(form.specialAllowance) +
+      Number(form.employerPF)
+    ) * 12;
+    if (Number(form.annualCTC) !== expectedAnnualCTC) {
+      errors.annualCTC = `Annual CTC must match the salary structure. Expected ₹${expectedAnnualCTC.toLocaleString('en-IN')}.`;
+    }
+  }
+
+  return errors;
 }
 
 function collection(value) {

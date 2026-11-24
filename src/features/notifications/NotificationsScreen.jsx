@@ -1,4 +1,11 @@
-import React, { useCallback, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -20,7 +27,17 @@ import {
   markAllNotificationsAsRead,
   markNotificationAsRead,
 } from './notificationsApi';
-import { addNotificationRefreshListener } from './notificationRefreshEvents';
+import {
+  filterNotifications,
+  formatNotificationDate,
+  normalizeNotifications,
+  NOTIFICATION_FILTERS,
+  paginateNotifications,
+} from './notificationListModel';
+import {
+  addNotificationRefreshListener,
+  emitNotificationRefresh,
+} from './notificationRefreshEvents';
 import { SHOULD_INITIALIZE_NATIVE_PUSH } from './nativePushConfig';
 import {
   getNotificationPermissionSnapshot,
@@ -30,61 +47,53 @@ import {
   subscribeToNotificationPermission,
 } from './pushNotificationService';
 
-function extractCollection(payload) {
-  if (Array.isArray(payload)) return payload;
-  if (Array.isArray(payload?.data)) return payload.data;
-  if (Array.isArray(payload?.notifications)) return payload.notifications;
-  if (Array.isArray(payload?.items)) return payload.items;
-  if (Array.isArray(payload?.records)) return payload.records;
-  if (Array.isArray(payload?.result)) return payload.result;
-
-  const firstArray = Object.values(payload || {}).find(Array.isArray);
-  return Array.isArray(firstArray) ? firstArray : [];
-}
-
-function normalizeNotification(item) {
-  const id = item?.id ?? item?.notificationId;
-  const isRead = Boolean(item?.isRead ?? item?.read ?? item?.isread ?? false);
-
-  return {
-    id,
-    isRead,
-    title: item?.title || 'Notification',
-    description: item?.description || item?.message || 'No message',
-    type: item?.type || 'info',
-    time: item?.timeAgo || item?.createdAt || item?.createdOn || item?.date || '',
-  };
-}
-
-function normalizeNotifications(payload) {
-  return extractCollection(payload)
-    .map(normalizeNotification)
-    .filter((item) => item.id !== undefined && item.id !== null && !item.isRead);
-}
+const FILTER_OPTIONS = [
+  { key: NOTIFICATION_FILTERS.ALL, label: 'All' },
+  { key: NOTIFICATION_FILTERS.UNREAD, label: 'Unread' },
+  { key: NOTIFICATION_FILTERS.READ, label: 'Read' },
+];
 
 function getTypeMeta(type) {
   const normalized = String(type || '').toLowerCase();
+  if (normalized === 'team_schedule_updated') {
+    return { icon: 'calendar-outline', color: colors.primary, backgroundColor: colors.tealTintSoft };
+  }
   if (normalized === 'success') {
-    return { icon: 'checkmark-circle-outline', color: colors.notifications.successIcon, backgroundColor: colors.successBackground };
+    return { icon: 'checkmark-circle', color: colors.notifications.successIcon, backgroundColor: colors.successBackground };
   }
   if (normalized === 'warning') {
     return { icon: 'warning-outline', color: colors.notifications.warningIcon, backgroundColor: colors.warningBackground };
   }
-  if (normalized === 'info') {
-    return { icon: 'information-circle-outline', color: colors.notifications.infoIcon, backgroundColor: colors.infoBackground };
-  }
   return { icon: 'notifications-outline', color: colors.primary, backgroundColor: colors.tealTintSoft };
+}
+
+function getEmptyState(filter) {
+  if (filter === NOTIFICATION_FILTERS.UNREAD) {
+    return { title: 'No unread notifications', copy: "You're all caught up." };
+  }
+  if (filter === NOTIFICATION_FILTERS.READ) {
+    return { title: 'No read notifications', copy: 'Notifications you read will appear here.' };
+  }
+  return { title: 'No notifications yet', copy: 'Your notifications will appear here when there are updates.' };
 }
 
 export default function NotificationsScreen() {
   const { token } = useAuth();
   const insets = useSafeAreaInsets();
   const mountedRef = useRef(true);
+  const listRef = useRef(null);
+  const requestVersionRef = useRef(0);
+  const hasLoadedDataRef = useRef(false);
+  const pendingReadIdsRef = useRef(new Set());
+  const markingAllRef = useRef(false);
   const [notifications, setNotifications] = useState([]);
+  const [selectedFilter, setSelectedFilter] = useState(NOTIFICATION_FILTERS.ALL);
+  const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
-  const [updatingId, setUpdatingId] = useState(null);
+  const [refreshError, setRefreshError] = useState('');
+  const [pendingReadIds, setPendingReadIds] = useState(() => new Set());
   const [markingAll, setMarkingAll] = useState(false);
   const [updatingPushPermission, setUpdatingPushPermission] = useState(false);
   const pushPermission = useSyncExternalStore(
@@ -93,28 +102,66 @@ export default function NotificationsScreen() {
     getNotificationPermissionSnapshot
   );
 
-  const unreadCount = notifications.length;
+  const unreadCount = useMemo(
+    () => notifications.filter((item) => item.isRead === false).length,
+    [notifications]
+  );
+  const filteredNotifications = useMemo(
+    () => filterNotifications(notifications, selectedFilter),
+    [notifications, selectedFilter]
+  );
+  const pagination = useMemo(
+    () => paginateNotifications(filteredNotifications, page),
+    [filteredNotifications, page]
+  );
+  const emptyState = getEmptyState(selectedFilter);
   const canMarkAll = unreadCount > 0 && !markingAll;
+
+  useEffect(() => {
+    if (page !== pagination.page) setPage(pagination.page);
+  }, [page, pagination.page]);
+
+  useEffect(() => {
+    requestVersionRef.current += 1;
+    hasLoadedDataRef.current = false;
+    setNotifications([]);
+    setSelectedFilter(NOTIFICATION_FILTERS.ALL);
+    setPage(1);
+    setError('');
+    setRefreshError('');
+    pendingReadIdsRef.current = new Set();
+    markingAllRef.current = false;
+    setPendingReadIds(new Set());
+    setMarkingAll(false);
+    setLoading(Boolean(token));
+  }, [token]);
 
   const loadNotifications = useCallback(
     async ({ refresh = false, signal } = {}) => {
-      if (!token) return;
-      if (refresh) {
-        setRefreshing(true);
-      } else {
-        setLoading(true);
+      if (!token) {
+        setLoading(false);
+        return;
       }
-      setError('');
+
+      const requestVersion = ++requestVersionRef.current;
+      if (refresh) setRefreshing(true);
+      else setLoading(true);
+      setRefreshError('');
+      if (!refresh) setError('');
 
       try {
         const response = await getUserNotifications(token, { signal });
-        if (!mountedRef.current) return;
+        if (!mountedRef.current || requestVersion !== requestVersionRef.current) return;
         setNotifications(normalizeNotifications(response));
+        hasLoadedDataRef.current = true;
+        setError('');
       } catch (requestError) {
-        if (!mountedRef.current || signal?.aborted) return;
-        setError(requestError.message || 'Unable to load notifications.');
+        if (!mountedRef.current || signal?.aborted || requestVersion !== requestVersionRef.current) return;
+        const message = requestError.message || 'Unable to load notifications.';
+        if (hasLoadedDataRef.current || refresh) setRefreshError(message);
+        else setError(message);
       } finally {
-        if (!mountedRef.current || signal?.aborted) return;
+        if (!mountedRef.current || signal?.aborted || requestVersion !== requestVersionRef.current) return;
         setLoading(false);
         setRefreshing(false);
       }
@@ -125,6 +172,8 @@ export default function NotificationsScreen() {
   useFocusEffect(
     useCallback(() => {
       mountedRef.current = true;
+      setPendingReadIds(new Set(pendingReadIdsRef.current));
+      setMarkingAll(markingAllRef.current);
       const controller = new AbortController();
       const removeNotificationRefreshListener = addNotificationRefreshListener(() => {
         loadNotifications({ refresh: true });
@@ -135,6 +184,7 @@ export default function NotificationsScreen() {
       }
       return () => {
         mountedRef.current = false;
+        requestVersionRef.current += 1;
         controller.abort();
         removeNotificationRefreshListener();
       };
@@ -145,16 +195,25 @@ export default function NotificationsScreen() {
     loadNotifications({ refresh: true });
   }, [loadNotifications]);
 
+  const selectFilter = useCallback((filter) => {
+    setSelectedFilter(filter);
+    setPage(1);
+  }, []);
+
+  const changePage = useCallback((direction) => {
+    setPage((current) => Math.max(1, Math.min(pagination.totalPages, current + direction)));
+    requestAnimationFrame(() => {
+      listRef.current?.scrollToOffset({ offset: 0, animated: true });
+    });
+  }, [pagination.totalPages]);
+
   const handlePushPermissionAction = useCallback(async () => {
     if (updatingPushPermission) return;
 
     setUpdatingPushPermission(true);
     try {
-      if (pushPermission.canAskAgain) {
-        await requestAndroidNotificationPermission();
-      } else {
-        await openAndroidNotificationSettings();
-      }
+      if (pushPermission.canAskAgain) await requestAndroidNotificationPermission();
+      else await openAndroidNotificationSettings();
     } catch {
       Alert.alert(
         'Unable to change notification settings',
@@ -165,76 +224,100 @@ export default function NotificationsScreen() {
     }
   }, [pushPermission.canAskAgain, updatingPushPermission]);
 
-  const handleMarkOne = async (notification) => {
-    if (notification?.id === undefined || notification?.id === null || updatingId === notification.id || markingAll) return;
+  const handleMarkOne = useCallback(async (notification) => {
+    if (notification?.isRead !== false || markingAllRef.current || !token) return;
+    const idKey = String(notification.id);
+    if (pendingReadIdsRef.current.has(idKey)) return;
 
-    const previous = notifications;
-    setUpdatingId(notification.id);
-    setNotifications((current) => current.filter((item) => item.id !== notification.id));
-
+    pendingReadIdsRef.current.add(idKey);
+    setPendingReadIds((current) => new Set(current).add(idKey));
     try {
       await markNotificationAsRead(notification.id, token);
+      if (!mountedRef.current) return;
+      setNotifications((current) => current.map((item) => (
+        String(item.id) === idKey ? { ...item, isRead: true } : item
+      )));
+      emitNotificationRefresh();
     } catch (requestError) {
-      setNotifications(previous);
-      Alert.alert('Unable to update', requestError.message || 'Please try again.');
-      loadNotifications({ refresh: true });
+      if (mountedRef.current) {
+        Alert.alert('Unable to update', requestError.message || 'Please try again.');
+      }
     } finally {
-      setUpdatingId(null);
+      pendingReadIdsRef.current.delete(idKey);
+      if (mountedRef.current) {
+        setPendingReadIds((current) => {
+          const next = new Set(current);
+          next.delete(idKey);
+          return next;
+        });
+      }
     }
-  };
+  }, [token]);
 
-  const handleMarkAll = async () => {
-    if (!canMarkAll) return;
+  const handleMarkAll = useCallback(async () => {
+    if (!canMarkAll || markingAllRef.current || !token) return;
 
-    const previous = notifications;
+    markingAllRef.current = true;
     setMarkingAll(true);
-    setNotifications([]);
-
     try {
       await markAllNotificationsAsRead(token);
+      if (!mountedRef.current) return;
+      setNotifications((current) => current.map((item) => ({ ...item, isRead: true })));
+      emitNotificationRefresh();
     } catch (requestError) {
-      setNotifications(previous);
-      Alert.alert('Unable to update', requestError.message || 'Please try again.');
+      if (mountedRef.current) {
+        Alert.alert('Unable to update', requestError.message || 'Please try again.');
+      }
     } finally {
-      setMarkingAll(false);
+      markingAllRef.current = false;
+      if (mountedRef.current) setMarkingAll(false);
     }
-  };
+  }, [canMarkAll, token]);
 
   const renderNotification = ({ item }) => {
     const meta = getTypeMeta(item.type);
-    const isUpdating = updatingId === item.id || markingAll;
+    const idKey = String(item.id);
+    const isUnread = item.isRead === false;
+    const isUpdating = pendingReadIds.has(idKey) || markingAll;
+    const formattedDate = formatNotificationDate(item.timestamp);
 
     return (
       <TouchableOpacity
-        style={styles.notificationRow}
+        style={[styles.notificationRow, !isUnread && styles.notificationRowRead]}
         onPress={() => handleMarkOne(item)}
-        disabled={isUpdating}
+        disabled={!isUnread || isUpdating}
         activeOpacity={0.78}
         accessibilityRole="button"
-        accessibilityLabel={`${item.title}. ${item.description}. Mark as read.`}
-        accessibilityState={{ busy: isUpdating }}
+        accessibilityLabel={`${item.title}. ${item.description}.${isUnread ? ' Mark as read.' : ''}`}
+        accessibilityState={{ disabled: !isUnread, busy: isUpdating }}
       >
         <View style={[styles.typeIcon, { backgroundColor: meta.backgroundColor }]}>
           <Ionicons name={meta.icon} size={20} color={meta.color} />
         </View>
         <View style={styles.notificationCopy}>
           <View style={styles.notificationTitleRow}>
-            <Text style={styles.notificationTitle} numberOfLines={1}>{item.title}</Text>
-            <View style={styles.unreadDot} />
+            <Text
+              style={[styles.notificationTitle, !isUnread && styles.notificationTitleRead]}
+              numberOfLines={2}
+            >
+              {item.title}
+            </Text>
+            {isUnread ? <View style={styles.unreadDot} /> : null}
           </View>
-          <Text style={styles.notificationDescription} numberOfLines={2}>{item.description}</Text>
-          {!!item.time && <Text style={styles.notificationTime}>{isUpdating ? 'Updating...' : item.time}</Text>}
+          <Text style={styles.notificationDescription}>{item.description}</Text>
+          {isUpdating || formattedDate ? (
+            <Text style={styles.notificationTime}>{isUpdating ? 'Updating...' : formattedDate}</Text>
+          ) : null}
         </View>
       </TouchableOpacity>
     );
   };
 
-  const listData = useMemo(() => (loading ? [] : notifications), [loading, notifications]);
-
   return (
     <FlatList
+      ref={listRef}
       style={styles.list}
-      data={listData}
+      data={loading && !hasLoadedDataRef.current ? [] : pagination.items}
       keyExtractor={(item) => String(item.id)}
       renderItem={renderNotification}
       showsVerticalScrollIndicator={false}
@@ -255,15 +338,14 @@ export default function NotificationsScreen() {
           <View style={styles.titleRow}>
             <View style={styles.titleCopy}>
               <Text style={styles.screenTitle}>My Notifications</Text>
-              <Text style={styles.subtitle}>
-                {unreadCount} unread notification{unreadCount === 1 ? '' : 's'}
-              </Text>
+              <Text style={styles.subtitle}>Stay updated with your activities</Text>
             </View>
             <TouchableOpacity
               style={[styles.markAllButton, !canMarkAll && styles.markAllButtonDisabled]}
               onPress={handleMarkAll}
               disabled={!canMarkAll}
               activeOpacity={0.78}
+              hitSlop={4}
               accessibilityRole="button"
               accessibilityLabel="Mark all notifications as read"
               accessibilityState={{ disabled: !canMarkAll, busy: markingAll }}
@@ -271,11 +353,42 @@ export default function NotificationsScreen() {
               {markingAll ? (
                 <ActivityIndicator size="small" color={colors.primary} />
               ) : (
-                <Text style={[styles.markAllText, !canMarkAll && styles.markAllTextDisabled]}>
-                  Mark all as read
-                </Text>
+                <>
+                  <Ionicons
+                    name="checkmark-done-outline"
+                    size={17}
+                    color={canMarkAll ? colors.primary : colors.textMuted}
+                  />
+                  <Text style={[styles.markAllText, !canMarkAll && styles.markAllTextDisabled]}>
+                    Mark all
+                  </Text>
+                </>
               )}
             </TouchableOpacity>
+          </View>
+
+          <View style={styles.filterBar} accessibilityRole="tablist">
+            {FILTER_OPTIONS.map((option) => {
+              const selected = option.key === selectedFilter;
+              const label = selected && option.key === NOTIFICATION_FILTERS.UNREAD
+                ? `${option.label} (${unreadCount})`
+                : option.label;
+              return (
+                <TouchableOpacity
+                  key={option.key}
+                  style={[styles.filterTab, selected && styles.filterTabSelected]}
+                  onPress={() => selectFilter(option.key)}
+                  activeOpacity={0.78}
+                  accessibilityRole="tab"
+                  accessibilityLabel={`${option.label} notifications`}
+                  accessibilityState={{ selected }}
+                >
+                  <Text style={[styles.filterTabText, selected && styles.filterTabTextSelected]}>
+                    {label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
           </View>
 
           {SHOULD_INITIALIZE_NATIVE_PUSH && pushPermission.status === 'denied' ? (
@@ -311,14 +424,24 @@ export default function NotificationsScreen() {
             </View>
           ) : null}
 
-          {loading && (
+          {refreshError ? (
+            <View style={styles.refreshError}>
+              <Ionicons name="alert-circle-outline" size={18} color={colors.error} />
+              <Text style={styles.refreshErrorText} numberOfLines={2}>{refreshError}</Text>
+              <TouchableOpacity onPress={onRefresh} accessibilityRole="button" accessibilityLabel="Retry refresh">
+                <Text style={styles.retryText}>Retry</Text>
+              </TouchableOpacity>
+            </View>
+          ) : null}
+
+          {loading && !hasLoadedDataRef.current ? (
             <View style={styles.loadingCard}>
               <ActivityIndicator color={colors.primary} />
               <Text style={styles.stateText}>Loading notifications...</Text>
             </View>
-          )}
+          ) : null}
 
-          {!!error && !loading && (
+          {error && !loading ? (
             <View style={styles.stateCard}>
               <View style={[styles.stateIcon, styles.stateIconError]}>
                 <Ionicons name="alert-circle-outline" size={22} color={colors.error} />
@@ -336,7 +459,7 @@ export default function NotificationsScreen() {
                 <Text style={styles.retryText}>Retry</Text>
               </TouchableOpacity>
             </View>
-          )}
+          ) : null}
         </View>
       }
       ListEmptyComponent={
@@ -345,7 +468,37 @@ export default function NotificationsScreen() {
             <View style={styles.stateIcon}>
               <Ionicons name="notifications-off-outline" size={22} color={colors.primary} />
             </View>
-            <Text style={styles.stateTitle}>No notifications</Text>
+            <Text style={styles.stateTitle}>{emptyState.title}</Text>
+            <Text style={styles.stateText}>{emptyState.copy}</Text>
+          </View>
+        ) : null
+      }
+      ListFooterComponent={
+        !loading && !error && pagination.total > 0 ? (
+          <View style={styles.paginationCard}>
+            <TouchableOpacity
+              style={[styles.pageButton, pagination.page === 1 && styles.pageButtonDisabled]}
+              onPress={() => changePage(-1)}
+              disabled={pagination.page === 1}
+              accessibilityRole="button"
+              accessibilityLabel="Previous notifications page"
+              accessibilityState={{ disabled: pagination.page === 1 }}
+            >
+              <Ionicons name="chevron-back" size={16} color={pagination.page === 1 ? colors.placeholder : colors.primary} />
+              <Text style={[styles.pageButtonText, pagination.page === 1 && styles.pageButtonTextDisabled]}>Prev</Text>
+            </TouchableOpacity>
+            <Text style={styles.pageIndicator}>{pagination.page} / {pagination.totalPages}</Text>
+            <TouchableOpacity
+              style={[styles.pageButton, pagination.page === pagination.totalPages && styles.pageButtonDisabled]}
+              onPress={() => changePage(1)}
+              disabled={pagination.page === pagination.totalPages}
+              accessibilityRole="button"
+              accessibilityLabel="Next notifications page"
+              accessibilityState={{ disabled: pagination.page === pagination.totalPages }}
+            >
+              <Text style={[styles.pageButtonText, pagination.page === pagination.totalPages && styles.pageButtonTextDisabled]}>Next</Text>
+              <Ionicons name="chevron-forward" size={16} color={pagination.page === pagination.totalPages ? colors.placeholder : colors.primary} />
+            </TouchableOpacity>
           </View>
         ) : null
       }
@@ -354,223 +507,126 @@ export default function NotificationsScreen() {
 }
 
 const styles = StyleSheet.create({
-  list: {
-    flex: 1,
-    backgroundColor: colors.notifications.background,
-  },
-  content: {
-    flexGrow: 1,
-    padding: spacing.screen,
-    backgroundColor: colors.notifications.background,
-  },
-  headerBlock: {
-    marginBottom: spacing.sectionGap,
-  },
+  list: { flex: 1, backgroundColor: colors.notifications.background },
+  content: { flexGrow: 1, padding: spacing.screen, backgroundColor: colors.notifications.background },
+  headerBlock: { marginBottom: spacing.lg },
   titleRow: {
     flexDirection: 'row',
     alignItems: 'flex-start',
     justifyContent: 'space-between',
-    gap: spacing.lg,
-    marginBottom: spacing.xxl,
+    gap: spacing.md,
+    marginBottom: spacing.lg,
   },
-  titleCopy: {
-    flex: 1,
-    minWidth: 0,
+  titleCopy: { flex: 1, minWidth: 0 },
+  screenTitle: { color: colors.textPrimary, fontSize: fontSizes.dashboardTitle, fontWeight: fontWeights.extraBold },
+  subtitle: { marginTop: spacing.sm, color: colors.textSecondary, fontSize: fontSizes.body, fontWeight: fontWeights.medium },
+  filterBar: {
+    flexDirection: 'row', padding: spacing.xs, borderRadius: radii.compactCard,
+    borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface,
   },
-  permissionNotice: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: spacing.lg,
-    marginBottom: spacing.xxl,
-    padding: spacing.lg,
-    borderRadius: radii.compactCard,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.surface,
-    ...shadows.subtle,
+  filterTab: {
+    flex: 1, minHeight: sizes.minTouchTarget, alignItems: 'center', justifyContent: 'center',
+    borderRadius: radii.pill, paddingHorizontal: spacing.sm,
   },
-  permissionIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: colors.tealTintSoft,
-  },
-  permissionCopy: {
-    flex: 1,
-    minWidth: 0,
-  },
-  permissionTitle: {
-    color: colors.textPrimary,
-    fontSize: fontSizes.body,
-    fontWeight: fontWeights.extraBold,
-  },
-  permissionText: {
-    marginTop: spacing.sm,
-    color: colors.textSecondary,
-    fontSize: fontSizes.base,
-    lineHeight: 19,
-  },
-  permissionButton: {
-    alignSelf: 'flex-start',
-    minHeight: sizes.minTouchTarget,
-    minWidth: 132,
-    marginTop: spacing.lg,
-    paddingHorizontal: spacing.xl,
-    borderRadius: radii.pill,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: colors.primary,
-  },
-  permissionButtonText: {
-    color: colors.white,
-    fontSize: fontSizes.base,
-    fontWeight: fontWeights.extraBold,
-  },
-  screenTitle: {
-    color: colors.textPrimary,
-    fontSize: fontSizes.dashboardTitle,
-    fontWeight: fontWeights.extraBold,
-  },
-  subtitle: {
-    marginTop: spacing.sm,
-    color: colors.textSecondary,
-    fontSize: fontSizes.body,
-    fontWeight: fontWeights.medium,
-  },
+  filterTabSelected: { backgroundColor: colors.primary },
+  filterTabText: { color: colors.textSecondary, fontSize: fontSizes.base, fontWeight: fontWeights.bold },
+  filterTabTextSelected: { color: colors.white },
   markAllButton: {
-    minHeight: 36,
+    flexShrink: 0,
+    minHeight: sizes.minTouchTarget,
+    minWidth: 96,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.xs,
     borderRadius: radii.pill,
-    backgroundColor: colors.notifications.readActionBackground,
+    backgroundColor: colors.tealTintSoft,
     borderWidth: 1,
     borderColor: colors.notifications.readActionBorder,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
   },
-  markAllButtonDisabled: {
-    backgroundColor: colors.notifications.readActionDisabled,
+  markAllButtonDisabled: { backgroundColor: colors.notifications.readActionDisabled },
+  markAllText: { color: colors.primary, fontSize: fontSizes.sm, fontWeight: fontWeights.extraBold },
+  markAllTextDisabled: { color: colors.textMuted },
+  permissionNotice: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: spacing.lg,
+    marginTop: spacing.lg, marginBottom: spacing.xl,
+    padding: spacing.lg, borderRadius: radii.compactCard, borderWidth: 1, borderColor: colors.border,
+    backgroundColor: colors.surface, ...shadows.subtle,
   },
-  markAllText: {
-    color: colors.primary,
-    fontSize: fontSizes.md,
-    fontWeight: fontWeights.extraBold,
+  permissionIcon: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.tealTintSoft },
+  permissionCopy: { flex: 1, minWidth: 0 },
+  permissionTitle: { color: colors.textPrimary, fontSize: fontSizes.body, fontWeight: fontWeights.extraBold },
+  permissionText: { marginTop: spacing.sm, color: colors.textSecondary, fontSize: fontSizes.base, lineHeight: 19 },
+  permissionButton: {
+    alignSelf: 'flex-start', minHeight: sizes.minTouchTarget, minWidth: 132, marginTop: spacing.lg,
+    paddingHorizontal: spacing.xl, borderRadius: radii.pill, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: colors.primary,
   },
-  markAllTextDisabled: {
-    color: colors.textMuted,
-  },
-  notificationRow: {
-    flexDirection: 'row',
-    gap: spacing.lg,
-    backgroundColor: colors.notifications.unreadRow,
-    borderRadius: radii.compactCard,
-    borderWidth: 1,
-    borderColor: colors.notifications.rowBorder,
-    padding: spacing.xxl,
-    marginBottom: spacing.lg,
-    ...shadows.subtle,
-  },
-  typeIcon: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  notificationCopy: {
-    flex: 1,
-    minWidth: 0,
-  },
-  notificationTitleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-  },
-  notificationTitle: {
-    flex: 1,
-    color: colors.textPrimary,
-    fontSize: fontSizes.body,
-    fontWeight: fontWeights.extraBold,
-  },
-  unreadDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: colors.notifications.unreadDot,
-  },
-  notificationDescription: {
-    marginTop: spacing.sm,
-    color: colors.textSecondary,
-    fontSize: fontSizes.base,
-    lineHeight: 19,
-  },
-  notificationTime: {
-    marginTop: spacing.md,
-    color: colors.textMuted,
-    fontSize: fontSizes.sm,
-    fontWeight: fontWeights.semibold,
-  },
-  loadingCard: {
-    minHeight: 120,
-    borderRadius: radii.compactCard,
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.border,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: spacing.md,
-    ...shadows.subtle,
-  },
-  stateCard: {
-    minHeight: 132,
-    borderRadius: radii.compactCard,
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.border,
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: spacing.xxl,
-    gap: spacing.md,
-    ...shadows.subtle,
-  },
-  stateIcon: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: colors.tealTintSoft,
-  },
-  stateIconError: {
+  permissionButtonText: { color: colors.white, fontSize: fontSizes.base, fontWeight: fontWeights.extraBold },
+  refreshError: {
+    flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginBottom: spacing.lg,
+    padding: spacing.md, borderRadius: radii.compactCard, borderWidth: 1, borderColor: colors.error,
     backgroundColor: colors.dangerBackground,
   },
-  stateTitle: {
-    color: colors.textPrimary,
-    fontSize: fontSizes.body,
-    fontWeight: fontWeights.extraBold,
-    textAlign: 'center',
+  refreshErrorText: { flex: 1, color: colors.textSecondary, fontSize: fontSizes.sm },
+  notificationRow: {
+    flexDirection: 'row', gap: spacing.md, backgroundColor: colors.primaryTintSoft,
+    borderRadius: radii.compactCard, borderWidth: 1, borderColor: colors.notifications.rowBorder,
+    padding: spacing.lg, marginBottom: spacing.md, ...shadows.subtle,
   },
-  stateText: {
-    color: colors.textSecondary,
-    fontSize: fontSizes.base,
-    textAlign: 'center',
-    lineHeight: 19,
+  notificationRowRead: { backgroundColor: colors.surface },
+  typeIcon: { width: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center' },
+  notificationCopy: { flex: 1, minWidth: 0 },
+  notificationTitleRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  notificationTitle: { flex: 1, color: colors.textPrimary, fontSize: fontSizes.body, fontWeight: fontWeights.bold },
+  notificationTitleRead: { fontWeight: fontWeights.semibold },
+  unreadDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: colors.notifications.unreadDot },
+  notificationDescription: { marginTop: spacing.xs, color: colors.textSecondary, fontSize: fontSizes.base, lineHeight: 18 },
+  notificationTime: { marginTop: spacing.sm, color: colors.textMuted, fontSize: fontSizes.sm, fontWeight: fontWeights.semibold },
+  loadingCard: {
+    minHeight: 120, borderRadius: radii.compactCard, backgroundColor: colors.surface,
+    borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center',
+    gap: spacing.md, ...shadows.subtle,
   },
+  stateCard: {
+    minHeight: 132, borderRadius: radii.compactCard, backgroundColor: colors.surface,
+    borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center',
+    padding: spacing.xxl, gap: spacing.md, ...shadows.subtle,
+  },
+  stateIcon: { width: 42, height: 42, borderRadius: 21, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.tealTintSoft },
+  stateIconError: { backgroundColor: colors.dangerBackground },
+  stateTitle: { color: colors.textPrimary, fontSize: fontSizes.body, fontWeight: fontWeights.extraBold, textAlign: 'center' },
+  stateText: { color: colors.textSecondary, fontSize: fontSizes.base, textAlign: 'center', lineHeight: 19 },
   retryButton: {
-    minHeight: sizes.minTouchTarget,
-    borderRadius: radii.pill,
-    borderWidth: 1,
-    borderColor: colors.border,
+    minHeight: sizes.minTouchTarget, borderRadius: radii.pill, borderWidth: 1, borderColor: colors.border,
+    flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingHorizontal: spacing.xxl,
+  },
+  retryText: { color: colors.primary, fontSize: fontSizes.base, fontWeight: fontWeights.extraBold },
+  paginationCard: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'space-between',
     gap: spacing.sm,
-    paddingHorizontal: spacing.xxl,
+    marginTop: spacing.sm,
+    borderRadius: radii.compactCard,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    padding: spacing.lg,
+    ...shadows.subtle,
   },
-  retryText: {
-    color: colors.primary,
-    fontSize: fontSizes.base,
-    fontWeight: fontWeights.extraBold,
+  pageButton: {
+    minHeight: 40,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    borderRadius: radii.pill,
+    backgroundColor: colors.tealTintSoft,
+    paddingHorizontal: spacing.lg,
   },
+  pageButtonDisabled: { backgroundColor: colors.mutedBackground },
+  pageButtonText: { color: colors.primary, fontSize: fontSizes.base, fontWeight: fontWeights.extraBold },
+  pageButtonTextDisabled: { color: colors.placeholder },
+  pageIndicator: { color: colors.textPrimary, fontSize: fontSizes.body, fontWeight: fontWeights.extraBold },
 });
